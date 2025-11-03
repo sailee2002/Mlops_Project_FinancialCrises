@@ -21,7 +21,7 @@ Tools Used:
 - Custom SliceFinder implementation
 
 Usage:
-    python step4_bias_detection_with_explicit_slicing.py
+    python step5_bias_detection_with_explicit_slicing.py
 """
 
 import pandas as pd

@@ -1,7 +1,7 @@
 """
-STEP 3c: POST-MERGE DATA CLEANING
+STEP 4: POST-MERGE DATA CLEANING
 
-Runs AFTER Step 3 (merging), BEFORE Step 3b (interaction features)
+Runs AFTER Step 3 (merging), BEFORE Step 5 (bias detection)
 
 Purpose:
 - Clean merged datasets to address merge-specific issues
@@ -31,8 +31,7 @@ Usage:
     python step3c_post_merge_cleaning.py
 
 Next Step:
-    python src/validation/validate_checkpoint_4_clean_merged.py (optional)
-    python step3b_interaction_features.py
+    python src/data/step5_bias_detection_with_explicit_slicing.py
 """
 
 import pandas as pd
