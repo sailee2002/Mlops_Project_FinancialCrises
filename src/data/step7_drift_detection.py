@@ -1,5 +1,5 @@
 """
-STEP 6: DRIFT DETECTION (Historical Data Drift)
+STEP 7: DRIFT DETECTION (Historical Data Drift)
 
 Detects drift in historical data by comparing time periods.
 
@@ -23,7 +23,7 @@ Note: This is HISTORICAL drift (offline).
 Production drift monitoring (online) is future work.
 
 Usage:
-    python step6_drift_detection.py
+    python step7_drift_detection.py
 """
 
 import pandas as pd

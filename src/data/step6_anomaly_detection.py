@@ -1,11 +1,11 @@
 """
-STEP 5: ANOMALY DETECTION (FLAG ONLY - NO DATA MODIFICATION)
+STEP 6: ANOMALY DETECTION (FLAG ONLY - NO DATA MODIFICATION)
 
 Detects anomalies and adds flag columns for model awareness.
 FIXED: Proper JSON serialization for all numpy/pandas types.
 
 Usage:
-    python src/validation/step5_anomaly_detection.py
+    python src/validation/step6_anomaly_detection.py
 """
 
 import pandas as pd
