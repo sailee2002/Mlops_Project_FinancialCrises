@@ -83,17 +83,28 @@ jobs:
         run: |
           pip install --upgrade pip wheel setuptools
           pip install -r requirements.txt
+          pip install dvc[s3]  # crucial for pulling from GCP
+
+      - name: Configure GCP Credentials
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          echo "$GOOGLE_APPLICATION_CREDENTIALS" > /tmp/gcp_key.json
+          export GOOGLE_APPLICATION_CREDENTIALS="/tmp/gcp_key.json"
+
+      - name: DVC Pull Data from GCP Remote
+        run: dvc pull
 
       - name: Validate Raw Data
-        run: python src/validation/validate_checkpoint_1_raw.py || true
+        run: python src/validation/validate_checkpoint_1_raw.py
 
       - name: Validate Clean Data
-        run: python src/validation/validate_checkpoint_2_clean.py || true
+        run: python src/validation/validate_checkpoint_2_clean.py
 
       - name: Validate Merged Data
-        run: python src/validation/validate_checkpoint_3_merged.py || true
+        run: python src/validation/validate_checkpoint_3_merged.py
 
-
+        
   airflow-dag-check:
     runs-on: ubuntu-latest
 
