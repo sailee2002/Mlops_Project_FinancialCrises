@@ -1132,6 +1132,165 @@ fluent_datasources:
       merged_features_clean_20251109_193017_261475:
         type: dataframe
         batch_metadata: {}
+      fred_raw_20251111_205726_477361:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_205726_640200:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_205726_777999:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_205726_951877:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_205727_059127:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251111_205732_440678:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251111_205847_138839:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251111_205849_824918:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251111_214728_934497:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_214729_132847:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_214729_279291:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_214729_461655:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_214729_635289:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251111_214734_962002:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251111_214849_377333:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251111_214852_620697:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251111_221003_801068:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_221003_947257:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_221004_102442:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_221004_296132:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_221004_404728:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251111_221009_782359:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251111_221123_949835:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251111_221126_381566:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251111_224457_863983:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_224458_347330:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_224458_616330:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_224459_325677:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_224459_525561:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251111_231237_258745:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_231237_450677:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_231237_748522:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_231238_001962:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_231238_165454:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251111_231245_232829:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251111_231401_123248:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251111_231403_790490:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251111_233552_252083:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251111_233552_422646:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251111_233552_609718:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251111_233552_829347:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251111_233553_016263:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251111_233559_234283:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251111_233713_734204:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251111_233716_216782:
+        type: dataframe
+        batch_metadata: {}
+      fred_raw_20251112_193620_619237:
+        type: dataframe
+        batch_metadata: {}
+      market_raw_20251112_193620_769677:
+        type: dataframe
+        batch_metadata: {}
+      company_prices_raw_20251112_193620_950077:
+        type: dataframe
+        batch_metadata: {}
+      company_balance_raw_20251112_193621_121249:
+        type: dataframe
+        batch_metadata: {}
+      company_income_raw_20251112_193621_224599:
+        type: dataframe
+        batch_metadata: {}
+      fred_clean_20251112_193630_018967:
+        type: dataframe
+        batch_metadata: {}
+      macro_features_clean_20251112_193802_184919:
+        type: dataframe
+        batch_metadata: {}
+      merged_features_clean_20251112_193805_428953:
+        type: dataframe
+        batch_metadata: {}
 notebooks:
 include_rendered_content:
   globally: false
