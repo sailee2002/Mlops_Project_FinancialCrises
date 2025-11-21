@@ -569,12 +569,11 @@ class BiasDetectorWithSlicing:
 def main():
     """Execute bias detection with data slicing."""
     
-    features_dir = Path("data/features")
+    features_dir = Path("data/processed/")
     
     # Find dataset
     candidates = [
-        "merged_features_clean.csv",
-        "merged_features.csv"
+        "features_engineered.csv"
     ]
     
     filepath = None

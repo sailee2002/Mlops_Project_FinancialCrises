@@ -483,13 +483,11 @@ ACTION REQUIRED:
 def main():
     """Run anomaly detection on cleaned merged data."""
     
-    features_dir = Path("data/features")
+    features_dir = Path("data/processed/")
     
     # Find the latest cleaned file
     candidates = [
-        "merged_features_clean.csv",
-        "macro_features_clean.csv",
-        "merged_features.csv"
+        "features_engineered.csv",
     ]
     
     filepath = None

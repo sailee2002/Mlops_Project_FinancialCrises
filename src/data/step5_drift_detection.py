@@ -291,13 +291,11 @@ class HistoricalDriftDetectorQuarterly:
 def main():
     """Execute historical drift detection."""
     
-    features_dir = Path("data/features")
+    features_dir = Path("data/processed/")
     
     # Find dataset
     candidates = [
-        "merged_features_clean_with_anomaly_flags.csv",
-        "merged_features_clean.csv",
-        "merged_features.csv"
+        "features_engineered.csv",
     ]
     
     filepath = None
