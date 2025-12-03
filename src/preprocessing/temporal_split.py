@@ -302,7 +302,7 @@ if __name__ == "__main__":
     # ========================================
     
     # Input file (quarterly data with targets)
-    input_file = 'data/features/quarterly_data_with_targets.csv'
+    input_file = 'data/features/quarterly_data_with_targets_clean.csv'
     
     # Output directory
     output_dir = 'data/splits'
