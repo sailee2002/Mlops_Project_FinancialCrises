@@ -64,4 +64,3 @@ mlruns/
 *.pth
 *.html
 *.h5
-*.pkl
