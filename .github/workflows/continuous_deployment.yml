@@ -105,7 +105,7 @@ jobs:
           if [ ! -f "data/splits/train_data.csv" ]; then
             echo "📊 Generating data splits..."
             
-            python src/models/create_target.py
+            python src/models/predictor/create_target.py
             python src/preprocessing/drop_features.py
             python src/preprocessing/temporal_split.py
             python src/preprocessing/handle_outliers_after_split.py
@@ -175,7 +175,7 @@ jobs:
         if: steps.check_data.outputs.data_exists == 'true'
         run: |
           echo "🚀 Training XGBoost for all 5 targets..."
-          python src/models/xgboost_model.py \
+          python src/models/predictor/xgboost_model.py \
             --target all \
             --splits-dir data/splits \
             --output-dir models/xgboost \
@@ -186,7 +186,7 @@ jobs:
         if: steps.check_data.outputs.data_exists == 'true'
         run: |
           echo "🔧 Running XGBoost hyperparameter tuning..."
-          python src/models/xgboost_hyperparameter_tuning.py \
+          python src/models/predictor/xgboost_hyperparameter_tuning.py \
             --splits-dir data/splits \
             --output-dir models/xgboost_tuned \
             --no-mlflow
@@ -269,7 +269,7 @@ jobs:
       - name: Train LightGBM (all 5 targets)
         run: |
           echo "🚀 Training LightGBM for all 5 targets..."
-          python src/models/lightgbm_model.py \
+          python src/models/predictor/lightgbm_model.py \
             --target all \
             --splits-dir data/splits \
             --output-dir models/lightgbm \
@@ -279,7 +279,7 @@ jobs:
       - name: Hyperparameter tuning for LightGBM
         run: |
           echo "🔧 Running LightGBM hyperparameter tuning..."
-          python src/models/lightgbm_hyperparameter_tuning.py \
+          python src/models/predictor/lightgbm_hyperparameter_tuning.py \
             --splits-dir data/splits \
             --output-dir models/lightgbm_tuned \
             --no-mlflow
@@ -344,7 +344,7 @@ jobs:
       - name: Train LSTM (all 5 targets)
         run: |
           echo "🚀 Training LSTM for all 5 targets..."
-          python src/models/lstm_model.py \
+          python src/models/predictor/lstm_model.py \
             --target all \
             --splits-dir data/splits \
             --output-dir models/lstm \
@@ -354,7 +354,7 @@ jobs:
       - name: Hyperparameter tuning for LSTM
         run: |
           echo "🔧 Running LSTM hyperparameter tuning..."
-          python src/models/lstm_hyperparameter_tuning.py \
+          python src/models/predictor/lstm_hyperparameter_tuning.py \
             --splits-dir data/splits \
             --output-dir models/lstm_tuned \
             --no-mlflow
@@ -438,7 +438,7 @@ jobs:
       - name: Run final model selection and bias detection
         run: |
           echo "🔍 Running final model selection and bias detection..."
-          python src/models/final_selection_after_bias_detection.py \
+          python src/models/predictor/final_selection_after_bias_detection.py \
             --models-dir models \
             --output-dir models/final_selection
         continue-on-error: true
