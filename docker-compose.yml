@@ -31,7 +31,7 @@ services:
       - ./src:/opt/airflow/src
       - .:/opt/airflow/project
       # Changed: Mount your service account key
-      - /Users/priyanka/Downloads/ninth-iris-422916-f2-9aec4e0969c6.json:/opt/airflow/gcs-key.json:ro
+      - ./gcs-key.json:/opt/airflow/gcs-key.json:ro
     ports:
       - "8080:8080"
     cpus: 2
@@ -66,7 +66,8 @@ services:
       - ./src:/opt/airflow/src
       - .:/opt/airflow/project
       # Changed: Mount your service account key
-      - /Users/priyanka/Downloads/ninth-iris-422916-f2-9aec4e0969c6.json:/opt/airflow/gcs-key.json:ro
+      - ./gcs-key.json:/opt/airflow/gcs-key.json:ro
+
     command: scheduler
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob']
