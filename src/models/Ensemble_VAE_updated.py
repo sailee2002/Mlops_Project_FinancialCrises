@@ -1,10 +1,8 @@
 """
 Ensemble VAE for Macroeconomic Scenario Generation
-WITH MLFLOW TRACKING (Nested Runs)
-
-Trains multiple Dense VAEs with different random seeds
-Combines their outputs for better diversity and quality
-SEPARATE OUTPUT FOLDER (outputs/output_Ensemble_VAE)
+GCS INTEGRATION VERSION
+Reads from: gs://mlops-financial-stress-data/data/features/macro_features_clean.csv
+Writes to: gs://mlops-financial-stress-data/models/vae/outputs/output_Ensemble_VAE/
 """
 
 import numpy as np
@@ -18,13 +16,16 @@ from sklearn.model_selection import train_test_split
 from scipy.stats import wasserstein_distance, ks_2samp
 import os
 import sys
-import shutil
 import warnings
 import time
 from datetime import datetime
+import io
 warnings.filterwarnings('ignore')
 
-# Add parent directory to path for imports
+# GCS imports
+import gcsfs
+
+# Add parent directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 # MLflow imports
@@ -34,40 +35,66 @@ from src.utils.mlflow_config import MLflowConfig
 
 
 # ============================================
-# CLEANUP (MODEL-SPECIFIC)
+# GCS SETUP
 # ============================================
 
-def cleanup_outputs(output_dir='outputs/output_Ensemble_VAE'):
-    """Delete old outputs for THIS MODEL ONLY and recreate directory"""
-    if os.path.exists(output_dir):
-        print(f"🗑️  Deleting old Ensemble VAE outputs...")
-        try:
-            shutil.rmtree(output_dir)
-            print(f"✓ Cleaned up {output_dir}\n")
-        except:
-            print(f"⚠  Could not delete outputs folder (files may be open)")
-            print(f"⚠  Will overwrite files instead\n")
+import gcsfs
+import os
+
+# Initialize GCS filesystem - let it auto-detect credentials
+fs = gcsfs.GCSFileSystem(token='google_default')
+
+# GCS paths
+GCS_BUCKET = 'mlops-financial-stress-data'
+GCS_DATA_PATH = f'gs://{GCS_BUCKET}/data/features/macro_features_clean.csv'
+GCS_OUTPUT_BASE = f'gs://{GCS_BUCKET}/models/vae/outputs/output_Ensemble_VAE'
+
+
+def cleanup_gcs_outputs(gcs_path):
+    """Delete old outputs from GCS"""
+    print(f"🗑️  Checking GCS: {gcs_path}")
+    path_without_prefix = gcs_path.replace('gs://', '')
     
-    # Recreate the directory
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"✓ Created output directory: {output_dir}\n")
+    try:
+        if fs.exists(path_without_prefix):
+            print(f"Deleting existing outputs...")
+            fs.rm(path_without_prefix, recursive=True)
+            print(f"✓ Cleaned up\n")
+        else:
+            print(f"Path doesn't exist, will create\n")
+    except Exception as e:
+        print(f"⚠ Could not delete: {e}\n")
+    
+    try:
+        fs.makedirs(path_without_prefix, exist_ok=True)
+        print(f"✓ Created GCS directory\n")
+    except Exception as e:
+        print(f"Directory: {e}\n")
 
-
-# [Rest of the code remains the same until main() function...]
 
 # ============================================
-# DATA LOADING
+# DATA LOADING (GCS)
 # ============================================
 
-def load_data(csv_path, test_size=0.2, val_size=0.1, random_seed=42):
-    """Load and split data"""
+def load_data_from_gcs(gcs_path, test_size=0.2, val_size=0.1, random_seed=42):
+    """Load data from GCS"""
     
     print("="*60)
-    print("LOADING DATA")
+    print("LOADING DATA FROM GCS")
     print("="*60)
-    print(f"File: {csv_path}\n")
+    print(f"GCS Path: {gcs_path}\n")
     
-    df = pd.read_csv(csv_path)
+    # Set seeds
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(random_seed)
+    
+    # Read from GCS
+    print("Reading CSV from GCS...")
+    with fs.open(gcs_path.replace('gs://', ''), 'r') as f:
+        df = pd.read_csv(f)
+    print(f"✓ Loaded {len(df)} rows\n")
     
     if 'Date' in df.columns:
         df = df.drop('Date', axis=1)
@@ -86,7 +113,7 @@ def load_data(csv_path, test_size=0.2, val_size=0.1, random_seed=42):
     features = df.columns.tolist()
     print(f"✓ Dataset: {len(df)} rows, {len(features)} features")
     
-    # Split with fixed seed
+    # Split
     train_val, test = train_test_split(df, test_size=test_size, random_state=random_seed)
     train, val = train_test_split(train_val, test_size=val_size/(1-test_size), random_state=random_seed)
     
@@ -97,10 +124,8 @@ def load_data(csv_path, test_size=0.2, val_size=0.1, random_seed=42):
 
 def normalize_data(train, val, test):
     """Normalize data"""
-    
     print("Normalizing...")
     
-    # Clip outliers
     for i in range(train.shape[1]):
         mean, std = train[:, i].mean(), train[:, i].std()
         lower, upper = mean - 5*std, mean + 5*std
@@ -114,7 +139,6 @@ def normalize_data(train, val, test):
     test_s = scaler.transform(test)
     
     print("✓ Normalized\n")
-    
     return train_s, val_s, test_s, scaler
 
 
@@ -188,19 +212,22 @@ def vae_loss(recon, x, mu, logvar, beta=0.5):
 
 
 # ============================================
-# ENSEMBLE VAE WRAPPER (Custom MLflow Model)
+# ENSEMBLE VAE WRAPPER
 # ============================================
 
 class EnsembleVAEWrapper(mlflow.pyfunc.PythonModel):
     """Custom MLflow model wrapper for Ensemble VAE"""
     
     def load_context(self, context):
-        """Load the ensemble models and scaler"""
         import torch
-        import pickle
         
         ensemble_path = context.artifacts["ensemble_package"]
-        ensemble_data = torch.load(ensemble_path, map_location='cpu')
+        # Handle both local and GCS paths
+        if ensemble_path.startswith('gs://'):
+            with fs.open(ensemble_path.replace('gs://', ''), 'rb') as f:
+                ensemble_data = torch.load(f, map_location='cpu')
+        else:
+            ensemble_data = torch.load(ensemble_path, map_location='cpu')
         
         self.models = []
         self.config = ensemble_data['config']
@@ -218,11 +245,8 @@ class EnsembleVAEWrapper(mlflow.pyfunc.PythonModel):
         self.scaler = ensemble_data['scaler']
         self.features = ensemble_data['features']
         self.n_models = len(self.models)
-        
-        print(f"✓ Loaded {self.n_models} ensemble models")
     
     def predict(self, context, model_input):
-        """Generate scenarios using the ensemble"""
         import torch
         import pandas as pd
         
@@ -236,9 +260,7 @@ class EnsembleVAEWrapper(mlflow.pyfunc.PythonModel):
         
         all_scenarios = []
         all_severities = []
-        
         per_model_dist = {k: v // self.n_models for k, v in severity_dist.items()}
-        
         device = torch.device('cpu')
         
         for model in self.models:
@@ -265,27 +287,24 @@ class EnsembleVAEWrapper(mlflow.pyfunc.PythonModel):
 
 
 # ============================================
-# TRAIN SINGLE VAE (WITH NESTED MLFLOW RUN)
+# TRAIN SINGLE VAE
 # ============================================
 
 def train_single_vae(train_loader, val_loader, input_dim, hidden_dims, 
-                    latent_dim, epochs, beta, device, model_id, random_seed, output_dir):
-    """Train one VAE with specific random seed and nested MLflow run"""
+                    latent_dim, epochs, beta, device, model_id, random_seed, gcs_output_dir):
+    """Train one VAE with nested MLflow run"""
     
     print(f"\n{'='*60}")
     print(f"TRAINING VAE #{model_id} (seed={random_seed})")
     print(f"{'='*60}")
     
-    # Set seed for this specific model
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(random_seed)
     
-    # Start NESTED MLflow run for this model
     with mlflow.start_run(run_name=f"VAE_Model_{model_id}", nested=True) as nested_run:
         
-        # Log model-specific parameters
         mlflow.log_params({
             'model_id': model_id,
             'random_seed': random_seed,
@@ -335,7 +354,6 @@ def train_single_vae(train_loader, val_loader, input_dim, hidden_dims,
             val_loss = np.mean(val_losses)
             scheduler.step(val_loss)
             
-            # Log to MLflow every 50 epochs
             if (epoch + 1) % 50 == 0:
                 print(f"  Epoch [{epoch+1}/{epochs}] | Train: {train_loss:.4f} | Val: {val_loss:.4f}")
                 mlflow.log_metrics({
@@ -343,7 +361,6 @@ def train_single_vae(train_loader, val_loader, input_dim, hidden_dims,
                     f'model_{model_id}_val_loss': val_loss
                 }, step=epoch+1)
             
-            # Early stopping
             if val_loss < best_val:
                 best_val = val_loss
                 patience_counter = 0
@@ -358,26 +375,25 @@ def train_single_vae(train_loader, val_loader, input_dim, hidden_dims,
         
         model.load_state_dict(best_state)
         
-        # Log final metrics for this model
         model_training_time = time.time() - model_start_time
         mlflow.log_metrics({
             f'model_{model_id}_best_val_loss': best_val,
             f'model_{model_id}_training_time_seconds': model_training_time
         })
         
-        # Save model artifact
-        model_path = f'{output_dir}/vae_model_{model_id}.pth'
-        torch.save({
+        # Save model to GCS
+        gcs_path_prefix = gcs_output_dir.replace('gs://', '')
+        model_data = {
             'model': model.state_dict(),
             'seed': random_seed,
             'model_id': model_id,
             'best_val_loss': best_val
-        }, model_path)
+        }
         
-        mlflow.log_artifact(model_path)
+        with fs.open(f'{gcs_path_prefix}/vae_model_{model_id}.pth', 'wb') as f:
+            torch.save(model_data, f)
         
-        print(f"✓ VAE #{model_id} trained! Best Val Loss: {best_val:.4f}")
-        print(f"✓ Logged to nested run: {nested_run.info.run_id}\n")
+        print(f"✓ VAE #{model_id} trained! Best Val Loss: {best_val:.4f}\n")
     
     return model
 
@@ -388,19 +404,16 @@ def train_single_vae(train_loader, val_loader, input_dim, hidden_dims,
 
 def generate_ensemble_scenarios(models, scaler, features, scenarios_per_model=20, 
                                 n_baseline=10, n_adverse=20, n_severe=50, n_extreme=20, device='cpu'):
-    """Generate scenarios from ensemble of VAEs"""
+    """Generate scenarios from ensemble"""
     
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE SCENARIOS")
     print("="*60)
-    print(f"Number of models: {len(models)}")
-    print(f"Scenarios per model: {scenarios_per_model}")
-    print(f"Total scenarios: {len(models) * scenarios_per_model}\n")
+    print(f"Models: {len(models)}, Scenarios per model: {scenarios_per_model}\n")
     
     all_scenarios = []
     all_severities = []
     
-    # Calculate scenarios per severity per model
     per_model_dist = {
         'baseline': n_baseline // len(models),
         'adverse': n_adverse // len(models),
@@ -413,171 +426,91 @@ def generate_ensemble_scenarios(models, scaler, features, scenarios_per_model=20
         latent_dim = model.decoder.model[0].in_features
         
         with torch.no_grad():
-            # Baseline
             if per_model_dist['baseline'] > 0:
                 z = torch.randn(per_model_dist['baseline'], latent_dim, device=device) * 0.5
                 s = model.decoder(z).cpu().numpy()
                 all_scenarios.append(s)
                 all_severities.extend(['Baseline'] * per_model_dist['baseline'])
             
-            # Adverse
             if per_model_dist['adverse'] > 0:
                 z = torch.randn(per_model_dist['adverse'], latent_dim, device=device) * 1.5
                 s = model.decoder(z).cpu().numpy()
                 all_scenarios.append(s)
                 all_severities.extend(['Adverse'] * per_model_dist['adverse'])
             
-            # Severe
             if per_model_dist['severe'] > 0:
                 z = torch.randn(per_model_dist['severe'], latent_dim, device=device) * 2.5
                 s = model.decoder(z).cpu().numpy()
                 all_scenarios.append(s)
                 all_severities.extend(['Severe'] * per_model_dist['severe'])
             
-            # Extreme
             if per_model_dist['extreme'] > 0:
                 z = torch.randn(per_model_dist['extreme'], latent_dim, device=device) * 3.5
                 s = model.decoder(z).cpu().numpy()
                 all_scenarios.append(s)
                 all_severities.extend(['Extreme'] * per_model_dist['extreme'])
         
-        print(f"✓ Model {idx+1}/{len(models)} contributed {scenarios_per_model} scenarios")
+        print(f"✓ Model {idx+1}/{len(models)}")
     
-    # Combine all scenarios
     all_scenarios = np.vstack(all_scenarios)
-    
-    # Denormalize
     scenarios_denorm = scaler.inverse_transform(all_scenarios)
     
-    # Create DataFrame
     df = pd.DataFrame(scenarios_denorm, columns=features)
     df.insert(0, 'Scenario', [f'Scenario_{i+1}' for i in range(len(df))])
     df.insert(1, 'Severity', all_severities)
     
-    print(f"\n✓ Total scenarios generated: {len(df)}")
-    print(f"  - Baseline: {(df['Severity']=='Baseline').sum()}")
-    print(f"  - Adverse: {(df['Severity']=='Adverse').sum()}")
-    print(f"  - Severe: {(df['Severity']=='Severe').sum()}")
-    print(f"  - Extreme: {(df['Severity']=='Extreme').sum()}\n")
+    print(f"\n✓ Total scenarios: {len(df)}")
+    print(f"  Baseline: {(df['Severity']=='Baseline').sum()}")
+    print(f"  Adverse: {(df['Severity']=='Adverse').sum()}")
+    print(f"  Severe: {(df['Severity']=='Severe').sum()}")
+    print(f"  Extreme: {(df['Severity']=='Extreme').sum()}\n")
     
-    # Log scenario distribution to MLflow
     mlflow.log_metrics({
-        'n_baseline_scenarios': int((df['Severity']=='Baseline').sum()),
-        'n_adverse_scenarios': int((df['Severity']=='Adverse').sum()),
-        'n_severe_scenarios': int((df['Severity']=='Severe').sum()),
-        'n_extreme_scenarios': int((df['Severity']=='Extreme').sum()),
         'total_scenarios': len(df),
-        'crisis_scenario_percentage': int((df['Severity'].isin(['Adverse', 'Severe', 'Extreme'])).sum())
+        'n_baseline': int((df['Severity']=='Baseline').sum()),
+        'n_adverse': int((df['Severity']=='Adverse').sum()),
+        'n_severe': int((df['Severity']=='Severe').sum()),
+        'n_extreme': int((df['Severity']=='Extreme').sum())
     })
     
     return df
 
 
 def classify_crisis_type(scenarios_df, feature_names, reference_data=None):
-    """Classify each scenario by CRISIS TYPE using DATA-DRIVEN thresholds"""
-    
+    """Classify crisis types"""
     print("="*60)
-    print("CLASSIFYING CRISIS TYPES (DATA-DRIVEN)")
+    print("CLASSIFYING CRISIS TYPES")
     print("="*60 + "\n")
     
-    # Use reference data if provided
     if reference_data is not None:
         ref_df = pd.DataFrame(reference_data, columns=feature_names)
-        print("Using reference data (training set) for percentile thresholds")
     else:
         ref_df = scenarios_df
-        print("Using generated scenarios for percentile thresholds")
     
-    # Calculate thresholds
-    thresholds = {}
-    
-    if 'GDP' in feature_names:
-        thresholds['gdp_very_low'] = ref_df['GDP'].quantile(0.05)
-        thresholds['gdp_low'] = ref_df['GDP'].quantile(0.25)
-        thresholds['gdp_high'] = ref_df['GDP'].quantile(0.75)
-        thresholds['gdp_very_high'] = ref_df['GDP'].quantile(0.95)
-    
-    if 'VIX' in feature_names:
-        thresholds['vix_low'] = ref_df['VIX'].quantile(0.25)
-        thresholds['vix_moderate'] = ref_df['VIX'].quantile(0.50)
-        thresholds['vix_high'] = ref_df['VIX'].quantile(0.75)
-        thresholds['vix_extreme'] = ref_df['VIX'].quantile(0.90)
-    
-    if 'Unemployment_Rate' in feature_names:
-        thresholds['unemp_low'] = ref_df['Unemployment_Rate'].quantile(0.25)
-        thresholds['unemp_moderate'] = ref_df['Unemployment_Rate'].quantile(0.50)
-        thresholds['unemp_high'] = ref_df['Unemployment_Rate'].quantile(0.75)
-        thresholds['unemp_extreme'] = ref_df['Unemployment_Rate'].quantile(0.90)
-    
-    if 'SP500_Close' in feature_names:
-        thresholds['sp500_very_low'] = ref_df['SP500_Close'].quantile(0.05)
-        thresholds['sp500_low'] = ref_df['SP500_Close'].quantile(0.25)
-        thresholds['sp500_high'] = ref_df['SP500_Close'].quantile(0.75)
-    
-    if 'Oil_Price' in feature_names:
-        thresholds['oil_very_low'] = ref_df['Oil_Price'].quantile(0.10)
-        thresholds['oil_low'] = ref_df['Oil_Price'].quantile(0.25)
-        thresholds['oil_high'] = ref_df['Oil_Price'].quantile(0.75)
-        thresholds['oil_very_high'] = ref_df['Oil_Price'].quantile(0.90)
-    
-    print("Data-Driven Thresholds:")
-    print("-" * 60)
-    for key, value in list(thresholds.items())[:8]:
-        print(f"  {key:25s}: {value:.2f}")
-    if len(thresholds) > 8:
-        print(f"  ... and {len(thresholds)-8} more thresholds")
-    print()
-    
-    # Classify scenarios
     crisis_types = []
-    crisis_scores = []
-    
     for idx, row in scenarios_df.iterrows():
-        gdp = row.get('GDP', thresholds.get('gdp_high', 18000))
-        vix = row.get('VIX', thresholds.get('vix_moderate', 20))
-        unemployment = row.get('Unemployment_Rate', thresholds.get('unemp_moderate', 5))
+        gdp = row.get('GDP', 18000)
+        vix = row.get('VIX', 20)
+        unemployment = row.get('Unemployment_Rate', 5)
         
-        # Simple classification logic
-        if gdp > thresholds.get('gdp_high', 18000) and vix < thresholds.get('vix_low', 18):
-            crisis_type = "Normal Economy"
-            score = 1
-        elif vix > thresholds.get('vix_extreme', 35):
+        if vix > 35:
             crisis_type = "Market Crash"
-            score = 10
-        elif unemployment > thresholds.get('unemp_extreme', 9):
+        elif unemployment > 9:
             crisis_type = "Unemployment Crisis"
-            score = 8
+        elif gdp < 14000:
+            crisis_type = "Economic Recession"
         else:
-            crisis_type = "Moderate Stress"
-            score = 4
+            crisis_type = "Normal Economy"
         
         crisis_types.append(crisis_type)
-        crisis_scores.append(score)
     
     scenarios_df.insert(2, 'Crisis_Type', crisis_types)
-    scenarios_df.insert(3, 'Crisis_Score', crisis_scores)
-    
-    # Log to MLflow
-    crisis_counts = scenarios_df['Crisis_Type'].value_counts()
-    crisis_type_metrics = {}
     
     print("Crisis Type Distribution:")
-    print("-" * 60)
-    for crisis_type, count in crisis_counts.items():
+    for crisis_type in scenarios_df['Crisis_Type'].unique():
+        count = (scenarios_df['Crisis_Type'] == crisis_type).sum()
         pct = 100 * count / len(scenarios_df)
         print(f"  {crisis_type:25s}: {count:3d} ({pct:5.1f}%)")
-        crisis_type_key = crisis_type.lower().replace(' ', '_')
-        crisis_type_metrics[f'crisis_type_{crisis_type_key}_count'] = int(count)
-    
-    mlflow.log_metrics({
-        'unique_crisis_types': len(crisis_counts),
-        'crisis_score_min': int(min(crisis_scores)),
-        'crisis_score_max': int(max(crisis_scores)),
-        'crisis_score_mean': float(np.mean(crisis_scores)),
-        **crisis_type_metrics
-    })
-    
-    print(f"\nTotal Unique Crisis Types: {len(crisis_counts)}")
     print("="*60 + "\n")
     
     return scenarios_df
@@ -587,17 +520,15 @@ def classify_crisis_type(scenarios_df, feature_names, reference_data=None):
 # VALIDATION
 # ============================================
 
-def validate(real_data, gen_data, features, save_dir):
-    """Validate scenarios and log to MLflow"""
-    
-    os.makedirs(save_dir, exist_ok=True)
+def validate(real_data, gen_data, features, gcs_output_dir):
+    """Validate and save to GCS"""
     
     print("="*60)
     print("VALIDATION")
     print("="*60 + "\n")
     
     if isinstance(gen_data, pd.DataFrame):
-        gen_data = gen_data.drop(['Scenario', 'Severity', 'Crisis_Type', 'Crisis_Score'], 
+        gen_data = gen_data.drop(['Scenario', 'Severity', 'Crisis_Type'], 
                                  axis=1, errors='ignore').values
     
     # KS tests
@@ -619,32 +550,35 @@ def validate(real_data, gen_data, features, save_dir):
     gen_corr = np.corrcoef(gen_data[:, :20].T)
     corr_mae = np.mean(np.abs(real_corr - gen_corr))
     
-    print(f"1. KS Pass Rate: {pass_rate:.1f}% ({ks_df['passed'].sum()}/{len(ks_df)})")
+    print(f"1. KS Pass Rate: {pass_rate:.1f}%")
     print(f"2. Correlation MAE: {corr_mae:.4f}")
     print(f"3. Wasserstein: {w_mean:.2f}\n")
     
-    # Log metrics to MLflow
     mlflow.log_metrics({
         'ks_pass_rate': pass_rate,
         'correlation_mae': corr_mae,
-        'wasserstein_distance': w_mean,
-        'n_features_passed_ks': int(ks_df['passed'].sum()),
-        'n_features_total': len(ks_df)
+        'wasserstein_distance': w_mean
     })
     
-    # Save reports
-    with open(f'{save_dir}/ensemble_validation.txt', 'w', encoding='utf-8') as f:
-        f.write("="*60 + "\n")
-        f.write("ENSEMBLE VAE VALIDATION REPORT\n")
-        f.write("="*60 + "\n\n")
-        f.write(f"KS Pass Rate: {pass_rate:.1f}%\n")
-        f.write(f"Correlation MAE: {corr_mae:.4f}\n")
-        f.write(f"Wasserstein: {w_mean:.2f}\n")
+    # Save to GCS
+    gcs_path_prefix = gcs_output_dir.replace('gs://', '')
     
-    ks_df.to_csv(f'{save_dir}/ensemble_ks_test_results.csv', index=False)
+    report = f"""{'='*60}
+ENSEMBLE VAE VALIDATION
+{'='*60}
+
+KS Pass Rate: {pass_rate:.1f}%
+Correlation MAE: {corr_mae:.4f}
+Wasserstein: {w_mean:.2f}
+"""
     
-    print(f"✓ Saved: {save_dir}/ensemble_validation.txt")
-    print(f"✓ Saved: {save_dir}/ensemble_ks_test_results.csv\n")
+    with fs.open(f"{gcs_path_prefix}/ensemble_validation.txt", 'w') as f:
+        f.write(report)
+    print(f"✓ Saved: {gcs_output_dir}/ensemble_validation.txt")
+    
+    with fs.open(f"{gcs_path_prefix}/ensemble_ks_results.csv", 'w') as f:
+        ks_df.to_csv(f, index=False)
+    print(f"✓ Saved: {gcs_output_dir}/ensemble_ks_results.csv\n")
     
     return {'pass_rate': pass_rate, 'wasserstein': w_mean, 'correlation': corr_mae}
 
@@ -653,21 +587,20 @@ def validate(real_data, gen_data, features, save_dir):
 # MAIN ENSEMBLE PIPELINE
 # ============================================
 
-def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
+def main(gcs_data_path, gcs_output_dir, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
          batch_size=128, epochs=300, beta=0.5, base_seed=42,
          n_baseline=10, n_adverse=20, n_severe=50, n_extreme=20,
-         mlflow_tracking_uri=None, experiment_name="Financial_Stress_Test_Scenarios",
-         output_dir='outputs/output_Ensemble_VAE'):
-    """Train ensemble of VAEs with custom MLflow model logging"""
+         mlflow_tracking_uri=None, experiment_name="Financial_Stress_Test_Scenarios"):
+    """Train ensemble with GCS integration"""
     
-    cleanup_outputs(output_dir)
+    cleanup_gcs_outputs(gcs_output_dir)
     
     print("="*60)
-    print("ENSEMBLE VAE - FINANCIAL STRESS TESTING")
-    print(f"Output Directory: {output_dir}")
+    print("ENSEMBLE VAE - GCS VERSION")
     print("="*60)
-    print(f"Training {n_models} independent VAEs")
-    print(f"Expected improvement: 70.8% → 72-78% KS")
+    print(f"Training {n_models} VAEs")
+    print(f"Input: {gcs_data_path}")
+    print(f"Output: {gcs_output_dir}")
     print("="*60 + "\n")
     
     # Initialize MLflow
@@ -676,24 +609,19 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
         experiment_name=experiment_name
     )
     
-    # Start PARENT MLflow run
-    run_name = f"Ensemble_VAE_{n_models}models_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"Ensemble_VAE_GCS_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     with mlflow.start_run(run_name=run_name) as parent_run:
-        print(f"✓ MLflow Parent Run Started: {parent_run.info.run_id}")
-        print(f"✓ Run Name: {run_name}\n")
+        print(f"✓ MLflow Parent Run: {parent_run.info.run_id}\n")
         
-        # Set tags
         mlflow_config.set_tags({
-            'model_type': 'Ensemble_VAE',
+            'model_type': 'Ensemble_VAE_GCS',
             'n_models': n_models,
             'stage': 'development',
-            'data_version': '1990_extended',
-            'crisis_focus': 'True',
-            'output_folder': output_dir
+            'data_source': 'GCS',
+            'output_location': 'GCS'
         })
         
-        # Log parameters
         params = {
             'n_models': n_models,
             'hidden_dims': str(hidden_dims),
@@ -701,18 +629,14 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
             'batch_size': batch_size,
             'max_epochs': epochs,
             'beta': beta,
-            'base_seed': base_seed,
-            'n_baseline': n_baseline,
-            'n_adverse': n_adverse,
-            'n_severe': n_severe,
-            'n_extreme': n_extreme
+            'base_seed': base_seed
         }
         mlflow_config.log_params(params)
         
         start_time = time.time()
         
-        # Load data
-        train, val, test, features = load_data(csv_path, random_seed=base_seed)
+        # Load from GCS
+        train, val, test, features = load_data_from_gcs(gcs_data_path, random_seed=base_seed)
         train_s, val_s, test_s, scaler = normalize_data(train, val, test)
         
         mlflow.log_metrics({
@@ -731,11 +655,10 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         input_dim = train_s.shape[1]
         
-        # Train multiple VAEs with NESTED RUNS
+        # Train models
         print("="*60)
         print(f"TRAINING {n_models} VAE MODELS")
         print("="*60)
-        print(f"Expected total time: ~{n_models * 15} minutes\n")
         
         models = []
         seeds = [base_seed + i * 111 for i in range(n_models)]
@@ -743,13 +666,11 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
         for i, seed in enumerate(seeds):
             model = train_single_vae(
                 train_loader, val_loader, input_dim, hidden_dims, 
-                latent_dim, epochs, beta, device, i+1, seed, output_dir
+                latent_dim, epochs, beta, device, i+1, seed, gcs_output_dir
             )
             models.append(model)
         
-        print("\n" + "="*60)
-        print(f"✅ ALL {n_models} MODELS TRAINED!")
-        print("="*60 + "\n")
+        print(f"\n✅ ALL {n_models} MODELS TRAINED!\n")
         
         # Generate scenarios
         scenarios_per_model = (n_baseline + n_adverse + n_severe + n_extreme) // n_models
@@ -758,31 +679,34 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
             n_baseline, n_adverse, n_severe, n_extreme, device
         )
         
-        # Classify crisis types
+        # Classify
         scenarios = classify_crisis_type(scenarios, features, reference_data=train)
         
         # Validate
-        results = validate(test, scenarios, features, save_dir=output_dir)
+        results = validate(test, scenarios, features, gcs_output_dir)
         
         training_time = time.time() - start_time
         mlflow.log_metric('training_time_seconds', training_time)
         
-        # Save files
+        # Save to GCS
         print("="*60)
-        print("SAVING")
+        print("SAVING TO GCS")
         print("="*60 + "\n")
         
-        scenarios.to_csv(f'{output_dir}/ensemble_vae_scenarios.csv', index=False)
-        print(f"✓ Saved: {output_dir}/ensemble_vae_scenarios.csv")
+        gcs_path_prefix = gcs_output_dir.replace('gs://', '')
+        
+        # Save scenarios
+        with fs.open(f"{gcs_path_prefix}/ensemble_vae_scenarios.csv", 'w') as f:
+            scenarios.to_csv(f, index=False)
+        print(f"✓ Saved: {gcs_output_dir}/ensemble_vae_scenarios.csv")
         
         # Save scaler
         import pickle
-        with open(f'{output_dir}/scaler.pkl', 'wb') as f:
+        with fs.open(f"{gcs_path_prefix}/scaler.pkl", 'wb') as f:
             pickle.dump(scaler, f)
-        print(f"✓ Saved: {output_dir}/scaler.pkl")
+        print(f"✓ Saved: {gcs_output_dir}/scaler.pkl")
         
-        # CREATE ENSEMBLE PACKAGE for MLflow custom model
-        print("\nCreating ensemble package for MLflow...")
+        # Create ensemble package
         ensemble_package = {
             'models': [model.state_dict() for model in models],
             'scaler': scaler,
@@ -797,31 +721,28 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
             }
         }
         
-        ensemble_package_path = f'{output_dir}/ensemble_vae_complete.pth'
-        torch.save(ensemble_package, ensemble_package_path)
-        print(f"✓ Saved ensemble package: {ensemble_package_path}")
+        with fs.open(f"{gcs_path_prefix}/ensemble_vae_complete.pth", 'wb') as f:
+            torch.save(ensemble_package, f)
+        print(f"✓ Saved: {gcs_output_dir}/ensemble_vae_complete.pth")
         
-        # LOG CUSTOM MLFLOW MODEL (Ensemble as pyfunc)
-        print("\nLogging ensemble as MLflow custom model...")
+        # Log custom MLflow model
+        print("\nLogging MLflow custom model...")
         
-        artifacts = {
-            "ensemble_package": ensemble_package_path
-        }
+        # Download ensemble package temporarily for MLflow
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pth') as tmp:
+            with fs.open(f"{gcs_path_prefix}/ensemble_vae_complete.pth", 'rb') as f:
+                tmp.write(f.read())
+            temp_model_path = tmp.name
+        
+        artifacts = {"ensemble_package": temp_model_path}
         
         conda_env = {
             'channels': ['defaults', 'conda-forge'],
             'dependencies': [
                 'python=3.9',
                 'pip',
-                {
-                    'pip': [
-                        'mlflow',
-                        'torch',
-                        'numpy',
-                        'pandas',
-                        'scikit-learn'
-                    ]
-                }
+                {'pip': ['mlflow', 'torch', 'numpy', 'pandas', 'scikit-learn', 'gcsfs']}
             ],
             'name': 'ensemble_vae_env'
         }
@@ -833,35 +754,21 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
             conda_env=conda_env
         )
         
-        print("✅ Logged ensemble as MLflow pyfunc model!")
-        print("   This model can be loaded and used for inference\n")
+        # Clean up temp file
+        os.remove(temp_model_path)
         
-        # Log additional artifacts
-        print("Logging additional artifacts...")
-        mlflow_config.log_artifacts([
-            f'{output_dir}/ensemble_vae_scenarios.csv',
-            f'{output_dir}/ensemble_validation.txt',
-            f'{output_dir}/ensemble_ks_test_results.csv'
-        ])
+        print("✅ Logged ensemble as MLflow model!\n")
         
-        # Log individual model files
-        for i in range(1, n_models + 1):
-            model_path = f'{output_dir}/vae_model_{i}.pth'
-            if os.path.exists(model_path):
-                mlflow.log_artifact(model_path)
-        
-        print("✓ All artifacts logged to MLflow\n")
-        
-        # Results summary
+        # Results
         print("="*60)
         print("ENSEMBLE VAE RESULTS")
         print("="*60)
         print(f"KS Pass Rate: {results['pass_rate']:.1f}%")
         print(f"Correlation MAE: {results['correlation']:.4f}")
         print(f"Wasserstein: {results['wasserstein']:.1f}")
-        print(f"\nTraining Time: {training_time:.1f}s ({training_time/60:.1f} min)")
-        print(f"MLflow Run ID: {parent_run.info.run_id}")
-        print(f"Output Directory: {output_dir}")
+        print(f"Training Time: {training_time:.1f}s")
+        print(f"MLflow Run: {parent_run.info.run_id}")
+        print(f"GCS Output: {gcs_output_dir}")
         print("="*60 + "\n")
         
         return models, scenarios, results, parent_run.info.run_id
@@ -874,33 +781,22 @@ def main(csv_path, n_models=5, hidden_dims=[256, 128, 64], latent_dim=32,
 if __name__ == "__main__":
     
     from dotenv import load_dotenv
-    
     load_dotenv()
     
     mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://localhost:5000')
     experiment_name = os.getenv('MLFLOW_EXPERIMENT_NAME', 'Financial_Stress_Test_Scenarios')
     
-    data_path = r'data/features/macro_features_clean.csv'
-    
-    print(f"Looking for data: {data_path}\n")
-    print(f"MLflow Tracking URI: {mlflow_uri}\n")
-    
     print("="*60)
-    print("ENSEMBLE VAE APPROACH")
+    print("ENSEMBLE VAE - GCS INTEGRATION")
     print("="*60)
-    print("Strategy: Train 5 independent VAEs, combine outputs")
-    print("\nBenefits:")
-    print("  ✅ More diverse scenarios")
-    print("  ✅ Reduced overfitting")
-    print("  ✅ Custom MLflow model for easy deployment")
-    print("  ✅ Expected improvement: +2-7% KS")
-    print("\nTrade-offs:")
-    print("  ⚠  Takes 5x longer (75 minutes vs 15 minutes)")
-    print("  ⚠  5 model files vs 1")
+    print(f"Reading from: {GCS_DATA_PATH}")
+    print(f"Writing to: {GCS_OUTPUT_BASE}")
+    print(f"MLflow: {mlflow_uri}")
     print("="*60 + "\n")
     
     models, scenarios, results, run_id = main(
-        csv_path=data_path,
+        gcs_data_path=GCS_DATA_PATH,
+        gcs_output_dir=GCS_OUTPUT_BASE,
         n_models=5,
         hidden_dims=[256, 128, 64],
         latent_dim=32,
@@ -913,24 +809,17 @@ if __name__ == "__main__":
         n_severe=50,
         n_extreme=20,
         mlflow_tracking_uri=mlflow_uri,
-        experiment_name=experiment_name,
-        output_dir='outputs/output_Ensemble_VAE'
+        experiment_name=experiment_name
     )
     
-    print("\n" + "="*60)
+    print("="*60)
     print("🎉 ENSEMBLE VAE COMPLETE!")
     print("="*60)
-    print(f"\nFinal Results:")
+    print(f"\nResults:")
     print(f"  KS Pass Rate: {results['pass_rate']:.1f}%")
     print(f"  Correlation MAE: {results['correlation']:.4f}")
-    print(f"  Wasserstein: {results['wasserstein']:.1f}")
-    print(f"\nFiles saved in: outputs/output_Ensemble_VAE/")
-    print(f"  - ensemble_vae_scenarios.csv")
-    print(f"  - vae_model_1.pth to vae_model_5.pth")
-    print(f"  - ensemble_validation.txt")
-    print("\nMLflow:")
-    print(f"  Run ID: {run_id}")
-    print(f"  View at: {mlflow_uri}")
-    print("\nTo load this model later:")
-    print(f"  model = mlflow.pyfunc.load_model('runs:/{run_id}/model')")
+    print(f"\nAll outputs in GCS:")
+    print(f"  {GCS_OUTPUT_BASE}/")
+    print(f"\nMLflow Run: {run_id}")
+    print(f"View at: {mlflow_uri}")
     print("="*60)
