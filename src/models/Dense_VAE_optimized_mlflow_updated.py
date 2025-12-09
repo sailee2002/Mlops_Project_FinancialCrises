@@ -1,6 +1,6 @@
 """
 Dense VAE for Macroeconomic Scenario Generation
-FINAL VERSION - GCS Integration
+FINAL VERSION - GCS Integration with Optional MLflow
 Reads from: gs://mlops-financial-stress-data/data/features/macro_features_clean.csv
 Writes to: gs://mlops-financial-stress-data/models/vae/outputs/output_Dense_VAE_optimized/
 """
@@ -30,29 +30,7 @@ import gcsfs
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-# MLflow imports
-import mlflow
-import mlflow.pytorch
-from src.utils.mlflow_config import MLflowConfig
-
-
-# ============================================
-# 0. GCS SETUP
-# ============================================
-'''
 # Initialize GCS filesystem
-fs = gcsfs.GCSFileSystem(project='ninth-iris-422916-f2', token='google_default')  # Replace with your project ID
-
-# GCS paths
-GCS_BUCKET = 'mlops-financial-stress-data'
-GCS_DATA_PATH = f'gs://{GCS_BUCKET}/data/features/macro_features_clean.csv'
-GCS_OUTPUT_BASE = f'gs://{GCS_BUCKET}/models/vae/outputs/output_Dense_VAE_optimized'
-'''
-
-import gcsfs
-import os
-
-# Initialize GCS filesystem - let it auto-detect credentials
 fs = gcsfs.GCSFileSystem(token='google_default')
 
 # GCS paths
@@ -60,11 +38,10 @@ GCS_BUCKET = 'mlops-financial-stress-data'
 GCS_DATA_PATH = f'gs://{GCS_BUCKET}/data/features/macro_features_clean.csv'
 GCS_OUTPUT_BASE = f'gs://{GCS_BUCKET}/models/vae/outputs/output_Dense_VAE_optimized'
 
+
 def cleanup_gcs_outputs(gcs_path):
     """Delete old outputs from GCS"""
     print(f"🗑️  Checking GCS path: {gcs_path}")
-    
-    # Remove gs:// prefix for gcsfs operations
     path_without_prefix = gcs_path.replace('gs://', '')
     
     try:
@@ -78,7 +55,6 @@ def cleanup_gcs_outputs(gcs_path):
         print(f"⚠ Could not delete: {e}")
         print(f"⚠ Will overwrite files instead\n")
     
-    # Create directory
     try:
         fs.makedirs(path_without_prefix, exist_ok=True)
         print(f"✓ Created GCS directory: {gcs_path}\n")
@@ -86,33 +62,25 @@ def cleanup_gcs_outputs(gcs_path):
         print(f"Directory creation: {e}\n")
 
 
-# ============================================
-# 1. DATA LOADING (GCS)
-# ============================================
-
 def load_data_from_gcs(gcs_path, test_size=0.2, val_size=0.1, random_seed=42):
     """Load data from GCS"""
-    
     print("="*60)
     print("LOADING DATA FROM GCS")
     print("="*60)
     print(f"GCS Path: {gcs_path}")
     print(f"Random Seed: {random_seed}\n")
     
-    # Set random seeds
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(random_seed)
         torch.cuda.manual_seed_all(random_seed)
     
-    # Read from GCS
     print("Reading CSV from GCS...")
     with fs.open(gcs_path.replace('gs://', ''), 'r') as f:
         df = pd.read_csv(f)
     print(f"✓ Loaded {len(df)} rows from GCS\n")
     
-    # Store date for crisis analysis
     if 'Date' in df.columns:
         dates = pd.to_datetime(df['Date'])
         df_with_dates = df.copy()
@@ -121,7 +89,6 @@ def load_data_from_gcs(gcs_path, test_size=0.2, val_size=0.1, random_seed=42):
         dates = None
         df_with_dates = df.copy()
     
-    # Handle categorical
     categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
     if categorical_cols:
         print(f"Converting categorical columns: {categorical_cols}")
@@ -130,7 +97,6 @@ def load_data_from_gcs(gcs_path, test_size=0.2, val_size=0.1, random_seed=42):
                 df[col] = pd.Categorical(df[col]).codes
                 print(f"  ✓ {col} encoded")
     
-    # Numeric only
     df = df.select_dtypes(include=[np.number])
     df = df.fillna(method='ffill').fillna(method='bfill')
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
@@ -138,11 +104,9 @@ def load_data_from_gcs(gcs_path, test_size=0.2, val_size=0.1, random_seed=42):
     feature_names = df.columns.tolist()
     print(f"\n✓ Dataset: {len(df)} rows, {len(feature_names)} features")
     
-    # ANALYZE CRISIS PERIODS
     if dates is not None:
         analyze_crisis_periods(df_with_dates, dates, feature_names)
     
-    # Split
     train_val, test = train_test_split(df, test_size=test_size, random_state=42)
     train, val = train_test_split(train_val, test_size=val_size/(1-test_size), random_state=42)
     
@@ -211,7 +175,6 @@ def normalize_data(train, val, test):
     """Normalize data"""
     print("Normalizing...")
     
-    # Clip outliers
     for i in range(train.shape[1]):
         mean, std = train[:, i].mean(), train[:, i].std()
         lower, upper = mean - 5*std, mean + 5*std
@@ -227,10 +190,6 @@ def normalize_data(train, val, test):
     print("✓ Normalized\n")
     return train_s, val_s, test_s, scaler
 
-
-# ============================================
-# 2. VAE MODEL (Same as before)
-# ============================================
 
 class Encoder(nn.Module):
     def __init__(self, input_dim, hidden_dims, latent_dim):
@@ -297,20 +256,17 @@ def vae_loss(recon, x, mu, logvar, beta=1.0):
     return recon_loss + beta * kl_loss, recon_loss, kl_loss
 
 
-# ============================================
-# 3. TRAINING (Same as before)
-# ============================================
-
 def train_vae(train_loader, val_loader, input_dim, hidden_dims, latent_dim, 
-              epochs, beta, device):
-    """Train VAE with MLflow logging"""
+              epochs, beta, device, use_mlflow=True):
+    """Train VAE with optional MLflow logging"""
     
     print("="*60)
     print("TRAINING")
     print("="*60)
     print(f"Device: {device}")
     print(f"Architecture: {hidden_dims} → {latent_dim}")
-    print(f"Beta: {beta}\n")
+    print(f"Beta: {beta}")
+    print(f"MLflow: {'Enabled' if use_mlflow else 'Disabled'}\n")
 
     warmup_epochs = 30
 
@@ -326,7 +282,6 @@ def train_vae(train_loader, val_loader, input_dim, hidden_dims, latent_dim,
         epoch_start = time.time()
         curr_beta = min(beta, beta * epoch / warmup_epochs)
 
-        # Train
         model.train()
         train_losses = []
         for batch in train_loader:
@@ -341,7 +296,6 @@ def train_vae(train_loader, val_loader, input_dim, hidden_dims, latent_dim,
             optimizer.step()
             train_losses.append(loss.item() / len(batch))
 
-        # Validate
         model.eval()
         val_losses = []
         with torch.no_grad():
@@ -362,11 +316,13 @@ def train_vae(train_loader, val_loader, input_dim, hidden_dims, latent_dim,
 
         if (epoch + 1) % 20 == 0:
             print(f"Epoch [{epoch+1}/{epochs}] | Train: {train_loss:.4f} | Val: {val_loss:.4f}")
-            mlflow.log_metrics({
-                'train_loss': train_loss,
-                'val_loss': val_loss,
-                'learning_rate': optimizer.param_groups[0]['lr']
-            }, step=epoch+1)
+            if use_mlflow:
+                import mlflow
+                mlflow.log_metrics({
+                    'train_loss': train_loss,
+                    'val_loss': val_loss,
+                    'learning_rate': optimizer.param_groups[0]['lr']
+                }, step=epoch+1)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -377,27 +333,27 @@ def train_vae(train_loader, val_loader, input_dim, hidden_dims, latent_dim,
 
         if patience_counter >= 30:
             print(f"\nEarly stopping at epoch {epoch+1}")
-            mlflow.log_metric('epochs_completed', epoch+1)
+            if use_mlflow:
+                import mlflow
+                mlflow.log_metric('epochs_completed', epoch+1)
             break
 
     model.load_state_dict(best_state)
     
     avg_epoch_time = np.mean(epoch_times)
-    mlflow.log_metrics({
-        'best_val_loss': best_val,
-        'avg_epoch_time_seconds': avg_epoch_time
-    })
+    if use_mlflow:
+        import mlflow
+        mlflow.log_metrics({
+            'best_val_loss': best_val,
+            'avg_epoch_time_seconds': avg_epoch_time
+        })
     
     print(f"\n✓ Training complete! Best Val Loss: {best_val:.4f}\n")
     return model
 
 
-# ============================================
-# 4. GENERATION
-# ============================================
-
 def generate_scenarios(model, scaler, features, n_baseline=10, n_adverse=20, 
-                      n_severe=50, n_extreme=20, device='cpu'):
+                      n_severe=50, n_extreme=20, device='cpu', use_mlflow=True):
     """Generate crisis-focused scenarios"""
     
     print("="*60)
@@ -411,25 +367,21 @@ def generate_scenarios(model, scaler, features, n_baseline=10, n_adverse=20,
     labels = []
     
     with torch.no_grad():
-        # Baseline
         z = torch.randn(n_baseline, latent_dim, device=device) * 0.5
         s = model.decoder(z).cpu().numpy()
         all_scenarios.append(s)
         labels.extend(['Baseline'] * n_baseline)
         
-        # Adverse
         z = torch.randn(n_adverse, latent_dim, device=device) * 1.5
         s = model.decoder(z).cpu().numpy()
         all_scenarios.append(s)
         labels.extend(['Adverse'] * n_adverse)
         
-        # Severe
         z = torch.randn(n_severe, latent_dim, device=device) * 2.5
         s = model.decoder(z).cpu().numpy()
         all_scenarios.append(s)
         labels.extend(['Severe'] * n_severe)
         
-        # Extreme
         z = torch.randn(n_extreme, latent_dim, device=device) * 3.5
         s = model.decoder(z).cpu().numpy()
         all_scenarios.append(s)
@@ -447,14 +399,16 @@ def generate_scenarios(model, scaler, features, n_baseline=10, n_adverse=20,
     print(f"✓ Crisis scenarios: {n_adverse + n_severe + n_extreme} ({100*(n_adverse + n_severe + n_extreme)//100}%)")
     print("="*60 + "\n")
     
-    mlflow.log_metrics({
-        'n_baseline_scenarios': n_baseline,
-        'n_adverse_scenarios': n_adverse,
-        'n_severe_scenarios': n_severe,
-        'n_extreme_scenarios': n_extreme,
-        'total_scenarios': len(df),
-        'crisis_scenario_percentage': (n_adverse + n_severe + n_extreme)
-    })
+    if use_mlflow:
+        import mlflow
+        mlflow.log_metrics({
+            'n_baseline_scenarios': n_baseline,
+            'n_adverse_scenarios': n_adverse,
+            'n_severe_scenarios': n_severe,
+            'n_extreme_scenarios': n_extreme,
+            'total_scenarios': len(df),
+            'crisis_scenario_percentage': (n_adverse + n_severe + n_extreme)
+        })
     
     return df
 
@@ -514,11 +468,7 @@ def classify_stress_level(scenarios_df, feature_names):
     return scenarios_df
 
 
-# ============================================
-# 5. VALIDATION
-# ============================================
-
-def validate(real_data, gen_data, features, gcs_output_dir):
+def validate(real_data, gen_data, features, gcs_output_dir, use_mlflow=True):
     """Validate and save to GCS"""
     
     print("="*60)
@@ -529,7 +479,6 @@ def validate(real_data, gen_data, features, gcs_output_dir):
         gen_data = gen_data.drop(['Scenario', 'Severity', 'Stress_Level', 'Stress_Score'], 
                                  axis=1, errors='ignore').values
     
-    # KS tests
     ks_results = []
     for i in range(len(features)):
         stat, pval = ks_2samp(real_data[:, i], gen_data[:, i])
@@ -543,12 +492,10 @@ def validate(real_data, gen_data, features, gcs_output_dir):
     ks_df = pd.DataFrame(ks_results)
     pass_rate = 100 * ks_df['passed'].sum() / len(ks_df)
     
-    # Wasserstein
     w_dists = [wasserstein_distance(real_data[:, i], gen_data[:, i]) 
                for i in range(min(20, real_data.shape[1]))]
     w_mean = np.mean(w_dists)
     
-    # Correlation
     real_corr = np.corrcoef(real_data[:, :20].T)
     gen_corr = np.corrcoef(gen_data[:, :20].T)
     corr_mae = np.mean(np.abs(real_corr - gen_corr))
@@ -557,18 +504,18 @@ def validate(real_data, gen_data, features, gcs_output_dir):
     print(f"2. Correlation MAE: {corr_mae:.4f}")
     print(f"3. Wasserstein Distance: {w_mean:.2f}\n")
     
-    mlflow.log_metrics({
-        'ks_pass_rate': pass_rate,
-        'correlation_mae': corr_mae,
-        'wasserstein_distance': w_mean,
-        'n_features_passed_ks': int(ks_df['passed'].sum()),
-        'n_features_total': len(ks_df)
-    })
+    if use_mlflow:
+        import mlflow
+        mlflow.log_metrics({
+            'ks_pass_rate': pass_rate,
+            'correlation_mae': corr_mae,
+            'wasserstein_distance': w_mean,
+            'n_features_passed_ks': int(ks_df['passed'].sum()),
+            'n_features_total': len(ks_df)
+        })
     
-    # Save to GCS
     gcs_path_prefix = gcs_output_dir.replace('gs://', '')
     
-    # Save validation report
     report_content = f"""{'='*60}
 DENSE VAE VALIDATION REPORT
 {'='*60}
@@ -587,17 +534,12 @@ Failed Features (p < 0.05):
         f.write(report_content)
     print(f"✓ Saved: {gcs_output_dir}/validation_report.txt")
     
-    # Save KS results
     with fs.open(f"{gcs_path_prefix}/ks_test_results.csv", 'w') as f:
         ks_df.to_csv(f, index=False)
     print(f"✓ Saved: {gcs_output_dir}/ks_test_results.csv\n")
     
     return {'pass_rate': pass_rate, 'wasserstein': w_mean, 'correlation': corr_mae}
 
-
-# ============================================
-# 6. VISUALIZATION (Save to GCS)
-# ============================================
 
 def create_plots(real_data, gen_data, features, gcs_output_dir):
     """Create plots and save to GCS"""
@@ -606,7 +548,6 @@ def create_plots(real_data, gen_data, features, gcs_output_dir):
         gen_data = gen_data.drop(['Scenario', 'Severity', 'Stress_Level', 'Stress_Score'], 
                                  axis=1, errors='ignore').values
     
-    # Distribution plots
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     axes = axes.flatten()
     
@@ -623,7 +564,6 @@ def create_plots(real_data, gen_data, features, gcs_output_dir):
     
     plt.tight_layout()
     
-    # Save to GCS
     gcs_path_prefix = gcs_output_dir.replace('gs://', '')
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
@@ -632,7 +572,6 @@ def create_plots(real_data, gen_data, features, gcs_output_dir):
         f.write(buf.read())
     plt.close()
     
-    # Correlation heatmaps
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     real_corr = np.corrcoef(real_data[:, :20].T)
@@ -659,15 +598,11 @@ def create_plots(real_data, gen_data, features, gcs_output_dir):
     print(f"✓ Saved plots to {gcs_output_dir}/\n")
 
 
-# ============================================
-# 7. MAIN PIPELINE
-# ============================================
-
 def main(gcs_data_path, gcs_output_dir, hidden_dims=[256, 128, 64], latent_dim=32, 
          batch_size=64, epochs=300, beta=0.5,
          n_baseline=10, n_adverse=20, n_severe=50, n_extreme=20,
-         mlflow_tracking_uri=None, experiment_name="Financial_Stress_Test_Scenarios"):
-    """Complete pipeline with GCS integration"""
+         use_mlflow=True, mlflow_tracking_uri=None, experiment_name="Financial_Stress_Test_Scenarios"):
+    """Complete pipeline with GCS integration and optional MLflow"""
     
     cleanup_gcs_outputs(gcs_output_dir)
     
@@ -676,18 +611,25 @@ def main(gcs_data_path, gcs_output_dir, hidden_dims=[256, 128, 64], latent_dim=3
     print("="*60)
     print(f"Input: {gcs_data_path}")
     print(f"Output: {gcs_output_dir}")
+    print(f"MLflow: {'Enabled' if use_mlflow else 'Disabled'}")
     print("="*60 + "\n")
     
-    # Initialize MLflow
-    mlflow_config = MLflowConfig(
-        tracking_uri=mlflow_tracking_uri,
-        experiment_name=experiment_name
-    )
+    run_id = "no-mlflow-run"
     
-    run_name = f"Dense_VAE_GCS_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
-    with mlflow.start_run(run_name=run_name) as run:
-        print(f"\n✓ MLflow Run: {run.info.run_id}\n")
+    if use_mlflow:
+        import mlflow
+        import mlflow.pytorch
+        from src.utils.mlflow_config import MLflowConfig
+        
+        mlflow_config = MLflowConfig(
+            tracking_uri=mlflow_tracking_uri,
+            experiment_name=experiment_name
+        )
+        
+        run_name = f"Dense_VAE_GCS_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        mlflow.start_run(run_name=run_name)
+        run_id = mlflow.active_run().info.run_id
+        print(f"✓ MLflow Run: {run_id}\n")
         
         mlflow_config.set_tags({
             'model_type': 'Dense_VAE_Optimized_GCS',
@@ -707,105 +649,101 @@ def main(gcs_data_path, gcs_output_dir, hidden_dims=[256, 128, 64], latent_dim=3
             'gcs_output_dir': gcs_output_dir
         }
         mlflow_config.log_params(params)
-        
-        start_time = time.time()
-        
-        # Load from GCS
-        train, val, test, features = load_data_from_gcs(gcs_data_path)
-        train_s, val_s, test_s, scaler = normalize_data(train, val, test)
-        
+    
+    start_time = time.time()
+    
+    train, val, test, features = load_data_from_gcs(gcs_data_path)
+    train_s, val_s, test_s, scaler = normalize_data(train, val, test)
+    
+    if use_mlflow:
+        import mlflow
         mlflow.log_metrics({
             'n_train_samples': len(train),
             'n_val_samples': len(val),
             'n_test_samples': len(test),
             'n_features': len(features)
         })
-        
-        # Create loaders
-        train_loader = DataLoader(
-            TensorDataset(torch.FloatTensor(train_s)), 
-            batch_size=batch_size, shuffle=True, drop_last=True
-        )
-        val_loader = DataLoader(
-            TensorDataset(torch.FloatTensor(val_s)), 
-            batch_size=batch_size, shuffle=False
-        )
-        
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Train
-        model = train_vae(train_loader, val_loader, train_s.shape[1], 
-                         hidden_dims, latent_dim, epochs, beta, device)
-        
-        # Generate
-        scenarios = generate_scenarios(model, scaler, features, 
-                                       n_baseline, n_adverse, n_severe, n_extreme, device)
-        
-        # Validate BEFORE classification
-        results = validate(test, scenarios, features, gcs_output_dir)
-        
-        # Add stress classification AFTER validation
-        scenarios = classify_stress_level(scenarios, features)
-        
-        # Visualize
-        create_plots(test, scenarios, features, gcs_output_dir)
-        
-        training_time = time.time() - start_time
+    
+    train_loader = DataLoader(
+        TensorDataset(torch.FloatTensor(train_s)), 
+        batch_size=batch_size, shuffle=True, drop_last=True
+    )
+    val_loader = DataLoader(
+        TensorDataset(torch.FloatTensor(val_s)), 
+        batch_size=batch_size, shuffle=False
+    )
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    model = train_vae(train_loader, val_loader, train_s.shape[1], 
+                     hidden_dims, latent_dim, epochs, beta, device, use_mlflow)
+    
+    scenarios = generate_scenarios(model, scaler, features, 
+                                   n_baseline, n_adverse, n_severe, n_extreme, device, use_mlflow)
+    
+    results = validate(test, scenarios, features, gcs_output_dir, use_mlflow)
+    
+    scenarios = classify_stress_level(scenarios, features)
+    
+    create_plots(test, scenarios, features, gcs_output_dir)
+    
+    training_time = time.time() - start_time
+    if use_mlflow:
+        import mlflow
         mlflow.log_metric('training_time_seconds', training_time)
-        
-        # Save to GCS
-        print("="*60)
-        print("SAVING TO GCS")
-        print("="*60 + "\n")
-        
-        gcs_path_prefix = gcs_output_dir.replace('gs://', '')
-        
-        # Save scenarios CSV
-        with fs.open(f"{gcs_path_prefix}/dense_vae_scenarios.csv", 'w') as f:
-            scenarios.to_csv(f, index=False)
-        print(f"✓ Saved: {gcs_output_dir}/dense_vae_scenarios.csv")
-        
-        # Save model to temporary file then upload
-        import pickle
-        model_package = {
-            'model': model.state_dict(),
-            'scaler': scaler,
-            'features': features,
-            'config': {
-                'hidden_dims': hidden_dims,
-                'latent_dim': latent_dim,
-                'beta': beta
-            }
+    
+    print("="*60)
+    print("SAVING TO GCS")
+    print("="*60 + "\n")
+    
+    gcs_path_prefix = gcs_output_dir.replace('gs://', '')
+    
+    with fs.open(f"{gcs_path_prefix}/dense_vae_scenarios.csv", 'w') as f:
+        scenarios.to_csv(f, index=False)
+    print(f"✓ Saved: {gcs_output_dir}/dense_vae_scenarios.csv")
+    
+    model_package = {
+        'model': model.state_dict(),
+        'scaler': scaler,
+        'features': features,
+        'config': {
+            'hidden_dims': hidden_dims,
+            'latent_dim': latent_dim,
+            'beta': beta
         }
-        
-        # Save model
-        with fs.open(f"{gcs_path_prefix}/dense_vae_model.pth", 'wb') as f:
-            torch.save(model_package, f)
-        print(f"✓ Saved: {gcs_output_dir}/dense_vae_model.pth\n")
-        
-        # Final summary
-        print("="*60)
-        print("RESULTS")
-        print("="*60)
-        print(f"✓ KS Pass Rate: {results['pass_rate']:.1f}%")
-        print(f"✓ Correlation MAE: {results['correlation']:.4f}")
-        print(f"✓ Wasserstein: {results['wasserstein']:.1f}")
-        print(f"✓ Training Time: {training_time:.1f}s")
-        print(f"✓ MLflow Run: {run.info.run_id}")
-        print(f"✓ GCS Output: {gcs_output_dir}")
-        print("="*60 + "\n")
-        
-        return model, scenarios, results, run.info.run_id
+    }
+    
+    with fs.open(f"{gcs_path_prefix}/dense_vae_model.pth", 'wb') as f:
+        torch.save(model_package, f)
+    print(f"✓ Saved: {gcs_output_dir}/dense_vae_model.pth\n")
+    
+    print("="*60)
+    print("RESULTS")
+    print("="*60)
+    print(f"✓ KS Pass Rate: {results['pass_rate']:.1f}%")
+    print(f"✓ Correlation MAE: {results['correlation']:.4f}")
+    print(f"✓ Wasserstein: {results['wasserstein']:.1f}")
+    print(f"✓ Training Time: {training_time:.1f}s")
+    if use_mlflow:
+        print(f"✓ MLflow Run: {run_id}")
+    print(f"✓ GCS Output: {gcs_output_dir}")
+    print("="*60 + "\n")
+    
+    if use_mlflow:
+        import mlflow
+        mlflow.end_run()
+    
+    return model, scenarios, results, run_id
 
-
-# ============================================
-# 8. RUN
-# ============================================
 
 if __name__ == "__main__":
-    
+    import argparse
     from dotenv import load_dotenv
     load_dotenv()
+    
+    parser = argparse.ArgumentParser(description='Train Dense VAE for financial stress scenarios')
+    parser.add_argument('--no-mlflow', action='store_true', help='Disable MLflow tracking')
+    args = parser.parse_args()
     
     mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://localhost:5000')
     experiment_name = os.getenv('MLFLOW_EXPERIMENT_NAME', 'Financial_Stress_Test_Scenarios')
@@ -815,7 +753,10 @@ if __name__ == "__main__":
     print("="*60)
     print(f"Reading from: {GCS_DATA_PATH}")
     print(f"Writing to: {GCS_OUTPUT_BASE}")
-    print(f"MLflow: {mlflow_uri}")
+    if args.no_mlflow:
+        print(f"MLflow: DISABLED")
+    else:
+        print(f"MLflow: {mlflow_uri}")
     print("="*60 + "\n")
     
     model, scenarios, results, run_id = main(
@@ -830,6 +771,7 @@ if __name__ == "__main__":
         n_adverse=20,
         n_severe=50,
         n_extreme=20,
+        use_mlflow=(not args.no_mlflow),
         mlflow_tracking_uri=mlflow_uri,
         experiment_name=experiment_name
     )
@@ -839,5 +781,6 @@ if __name__ == "__main__":
     print("="*60)
     print(f"\nAll outputs saved to GCS:")
     print(f"  {GCS_OUTPUT_BASE}/")
-    print(f"\nMLflow Run ID: {run_id}")
+    if not args.no_mlflow:
+        print(f"\nMLflow Run ID: {run_id}")
     print("="*60)

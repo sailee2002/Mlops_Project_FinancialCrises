@@ -15,7 +15,6 @@ env:
   GCP_PROJECT: "ninth-iris-422916-f2"
   KS_THRESHOLD: "0.806"
   CORR_MAE_THRESHOLD: "0.0645"
-  DISABLE_MLFLOW: "true"
 
 jobs:
   prepare-vae-data:
@@ -126,10 +125,8 @@ jobs:
         if: steps.check_data.outputs.data_exists == 'true'
         run: |
           echo "🚀 Training Dense VAE Optimized..."
-          python src/models/Dense_VAE_optimized_mlflow_updated.py
+          python src/models/Dense_VAE_optimized_mlflow_updated.py --no-mlflow
           echo "✅ Dense VAE training complete"
-        env:
-          DISABLE_MLFLOW: "true"
         continue-on-error: false
         timeout-minutes: 60
       
@@ -137,10 +134,8 @@ jobs:
         if: steps.check_data.outputs.data_exists == 'true'
         run: |
           echo "🚀 Training Ensemble VAE..."
-          python src/models/Ensemble_VAE_updated.py
+          python src/models/Ensemble_VAE_updated.py --no-mlflow
           echo "✅ Ensemble VAE training complete"
-        env:
-          DISABLE_MLFLOW: "true"
         continue-on-error: false
         timeout-minutes: 60
       
