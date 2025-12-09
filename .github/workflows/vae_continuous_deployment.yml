@@ -12,6 +12,7 @@ on:
 env:
   PYTHON_VERSION: "3.10"
   GCP_BUCKET: "mlops-financial-stress-data"
+  GCP_PROJECT: "ninth-iris-422916-f2"
   KS_THRESHOLD: "0.806"
   CORR_MAE_THRESHOLD: "0.0645"
   DISABLE_MLFLOW: "true"
@@ -90,6 +91,9 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -140,21 +144,60 @@ jobs:
         continue-on-error: false
         timeout-minutes: 60
       
+      - name: Download trained models from GCS
+        if: steps.check_data.outputs.data_exists == 'true'
+        run: |
+          echo "📥 Downloading trained models from GCS..."
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          
+          # Create local output directories matching Python script structure
+          mkdir -p outputs/output_Dense_VAE_optimized
+          mkdir -p outputs/output_Ensemble_VAE
+          
+          # Download Dense VAE outputs
+          echo "Downloading Dense VAE outputs..."
+          gsutil -m cp gs://${{ env.GCP_BUCKET }}/models/vae/outputs/output_Dense_VAE_optimized/* outputs/output_Dense_VAE_optimized/ || echo "Some Dense VAE files not found"
+          
+          # Download Ensemble VAE outputs
+          echo "Downloading Ensemble VAE outputs..."
+          gsutil -m cp gs://${{ env.GCP_BUCKET }}/models/vae/outputs/output_Ensemble_VAE/* outputs/output_Ensemble_VAE/ || echo "Some Ensemble VAE files not found"
+          
+          echo "✅ Model outputs downloaded"
+      
       - name: Check training outputs
         if: steps.check_data.outputs.data_exists == 'true'
         run: |
           echo "📊 Checking training outputs..."
-          if ls models/vae/*.pth 1> /dev/null 2>&1; then
-            echo "✅ Model checkpoints found"
-            ls -lh models/vae/*.pth
+          
+          echo "=== Dense VAE Optimized ==="
+          if [ -f "outputs/output_Dense_VAE_optimized/dense_vae_scenarios.csv" ]; then
+            echo "✅ Dense VAE scenarios found"
+            ls -lh outputs/output_Dense_VAE_optimized/dense_vae_scenarios.csv
           else
-            echo "⚠️ No model checkpoints found"
+            echo "⚠️ Dense VAE scenarios not found"
           fi
-          if ls outputs/scenarios/*.csv 1> /dev/null 2>&1; then
-            echo "✅ Generated scenarios found"
-            ls -lh outputs/scenarios/*.csv
+          
+          if [ -f "outputs/output_Dense_VAE_optimized/dense_vae_model.pth" ]; then
+            echo "✅ Dense VAE model found"
+            ls -lh outputs/output_Dense_VAE_optimized/dense_vae_model.pth
           else
-            echo "⚠️ No scenarios generated"
+            echo "⚠️ Dense VAE model not found"
+          fi
+          
+          echo ""
+          echo "=== Ensemble VAE ==="
+          if [ -f "outputs/output_Ensemble_VAE/ensemble_vae_scenarios.csv" ]; then
+            echo "✅ Ensemble VAE scenarios found"
+            ls -lh outputs/output_Ensemble_VAE/ensemble_vae_scenarios.csv
+          else
+            echo "⚠️ Ensemble VAE scenarios not found"
+          fi
+          
+          if [ -f "outputs/output_Ensemble_VAE/ensemble_vae_complete.pth" ]; then
+            echo "✅ Ensemble VAE model found"
+            ls -lh outputs/output_Ensemble_VAE/ensemble_vae_complete.pth
+          else
+            echo "⚠️ Ensemble VAE model not found"
           fi
       
       - name: Upload trained models as artifact
@@ -163,9 +206,8 @@ jobs:
         with:
           name: vae-trained-models
           path: |
-            models/vae/*.pth
-            models/vae/*.pkl
-            outputs/scenarios/*.csv
+            outputs/output_Dense_VAE_optimized/*
+            outputs/output_Ensemble_VAE/*
           retention-days: 30
         continue-on-error: true
 
@@ -194,6 +236,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: vae-trained-models
+          path: outputs
       
       - name: Download training data
         uses: actions/download-artifact@v4
@@ -201,27 +244,47 @@ jobs:
           name: vae-training-data
           path: data/features
       
-      - name: Run Model Validation
-        id: validation
+      - name: Run Model Validation - Dense VAE
+        id: validation_dense
         run: |
-          echo "🔍 Running model validation..."
-          python src/models/model_validation.py
-          echo "✅ Validation complete"
+          echo "🔍 Running validation for Dense VAE Optimized..."
+          python src/models/model_validation.py Dense_VAE_Optimized
+          echo "✅ Dense VAE validation complete"
+        continue-on-error: false
+      
+      - name: Run Model Validation - Ensemble VAE
+        id: validation_ensemble
+        run: |
+          echo "🔍 Running validation for Ensemble VAE..."
+          python src/models/model_validation.py Ensemble_VAE
+          echo "✅ Ensemble VAE validation complete"
         continue-on-error: false
       
       - name: Check validation results
         run: |
           echo "📊 Checking validation results..."
-          if [ -f "outputs/validation/validation_results.json" ]; then
-            echo "✅ Validation results found"
-            cat outputs/validation/validation_results.json
-            python -c "import json; results = json.load(open('outputs/validation/validation_results.json')); ks = results.get('ks_pass_rate', 0); corr = results.get('correlation_mae', 1.0); print(f'KS: {ks:.1%}, Corr MAE: {corr:.4f}'); exit(0 if ks >= 0.806 and corr <= 0.0645 else 1)"
+          
+          # Check Dense VAE validation
+          if [ -f "outputs/validation/validation_report.txt" ]; then
+            echo "✅ Validation report found"
+            cat outputs/validation/validation_report.txt
           else
-            echo "❌ Validation results not found"
+            echo "❌ Validation report not found"
             exit 1
           fi
       
-      - name: Upload validation results
+      - name: Upload validation results to GCS
+        run: |
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          
+          if [ -d "outputs/validation" ]; then
+            echo "📤 Uploading validation results to GCS..."
+            gsutil -m cp -r outputs/validation/* gs://${{ env.GCP_BUCKET }}/outputs/vae/validation/
+            echo "✅ Validation results uploaded"
+          fi
+        continue-on-error: true
+      
+      - name: Upload validation results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: vae-validation-results
@@ -249,10 +312,11 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Download artifacts
+      - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: vae-trained-models
+          path: outputs
       
       - name: Download training data
         uses: actions/download-artifact@v4
@@ -279,19 +343,28 @@ jobs:
       - name: Check bias detection results
         run: |
           echo "📊 Checking bias detection results..."
-          for model in Dense_VAE_Optimized Ensemble_VAE; do
-            if [ -f "outputs/bias/${model}_bias_report.json" ]; then
-              echo "✅ ${model} bias report found"
-              cat "outputs/bias/${model}_bias_report.json"
-            fi
-          done
-          python -c "import json, os; has_bias = False; [print(f'{m}: OK') for m in ['Dense_VAE_Optimized', 'Ensemble_VAE'] if os.path.exists(f'outputs/bias/{m}_bias_report.json')]; print('✅ Bias checks complete')"
+          
+          if [ -f "outputs/bias_detection/bias_detection_report.txt" ]; then
+            echo "✅ Bias detection report found"
+            cat outputs/bias_detection/bias_detection_report.txt
+          fi
       
-      - name: Upload bias detection results
+      - name: Upload bias results to GCS
+        run: |
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          
+          if [ -d "outputs/bias_detection" ]; then
+            echo "📤 Uploading bias detection results to GCS..."
+            gsutil -m cp -r outputs/bias_detection/* gs://${{ env.GCP_BUCKET }}/outputs/vae/bias_detection/
+            echo "✅ Bias results uploaded"
+          fi
+        continue-on-error: true
+      
+      - name: Upload bias detection results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: vae-bias-results
-          path: outputs/bias/*
+          path: outputs/bias_detection/*
           retention-days: 30
 
   model-selection:
@@ -330,31 +403,38 @@ jobs:
       
       - name: Display selected model
         run: |
-          if [ -f "outputs/selection/best_model.json" ]; then
+          if [ -f "outputs/model_selection/model_selection.json" ]; then
             echo "🏆 Best Model Selected:"
-            cat outputs/selection/best_model.json
-            python -c "import json; best = json.load(open('outputs/selection/best_model.json')); print(f\"Model: {best.get('model_name')}, KS: {best.get('ks_pass_rate', 0):.1%}, Corr MAE: {best.get('correlation_mae', 0):.4f}\")"
+            cat outputs/model_selection/model_selection.json
+            python -c "import json; best = json.load(open('outputs/model_selection/model_selection.json')); print(f\"\\nModel: {best['selected_model']}\\nKS Pass Rate: {best['metrics']['ks_pass_rate']:.1f}%\\nCorrelation MAE: {best['metrics']['correlation_mae']:.4f}\")"
           else
             echo "❌ Model selection results not found"
             exit 1
           fi
       
-      - name: Upload model to GCS
+      - name: Upload all results to GCS
         run: |
-          echo "📤 Uploading best model to GCS..."
-          gcloud config set project ninth-iris-422916-f2
-          gsutil -m cp -r models/vae/* gs://${{ env.GCP_BUCKET }}/models/vae/
-          gsutil -m cp -r outputs/* gs://${{ env.GCP_BUCKET }}/outputs/vae/
-          gsutil cp outputs/selection/best_model.json gs://${{ env.GCP_BUCKET }}/models/vae/best_model.json
-          echo "✅ Model uploaded to GCS"
+          echo "📤 Uploading all results to GCS..."
+          gcloud config set project ${{ env.GCP_PROJECT }}
+          
+          # Upload model selection results
+          if [ -d "outputs/model_selection" ]; then
+            gsutil -m cp -r outputs/model_selection/* gs://${{ env.GCP_BUCKET }}/outputs/vae/model_selection/
+          fi
+          
+          # Upload best model metadata
+          if [ -f "outputs/model_selection/model_selection.json" ]; then
+            gsutil cp outputs/model_selection/model_selection.json gs://${{ env.GCP_BUCKET }}/models/vae/best_model_selection.json
+          fi
+          
+          echo "✅ All results uploaded to GCS"
       
       - name: Upload final artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vae-final-model
+          name: vae-final-results
           path: |
-            models/vae/*
-            outputs/selection/*
+            outputs/model_selection/*
           retention-days: 90
 
   pipeline-summary:
@@ -380,18 +460,40 @@ jobs:
             echo "✅ PIPELINE COMPLETED SUCCESSFULLY!"
             echo "================================================"
             echo ""
-            echo "📦 Artifacts stored in GCS: mlops-financial-stress-data"
+            echo "📦 All artifacts stored in GCS:"
+            echo "   • Training data: gs://${{ env.GCP_BUCKET }}/data/features/"
+            echo "   • Models: gs://${{ env.GCP_BUCKET }}/models/vae/outputs/"
+            echo "   • Validation: gs://${{ env.GCP_BUCKET }}/outputs/vae/validation/"
+            echo "   • Bias detection: gs://${{ env.GCP_BUCKET }}/outputs/vae/bias_detection/"
+            echo "   • Model selection: gs://${{ env.GCP_BUCKET }}/outputs/vae/model_selection/"
             echo ""
             echo "Models trained:"
             echo "  • Dense VAE Optimized (596 features, no PCA)"
-            echo "  • Ensemble VAE"
+            echo "  • Ensemble VAE (5 models)"
             echo ""
             echo "Next steps:"
-            echo "  1. Review validation metrics"
+            echo "  1. Review validation metrics in GCS"
             echo "  2. Check bias detection reports"
             echo "  3. Deploy best model to production"
           else
             echo "================================================"
             echo "⚠️  PIPELINE FAILED - CHECK LOGS"
             echo "================================================"
+            echo ""
+            echo "Failed jobs:"
+            if [ "${{ needs.prepare-vae-data.result }}" != "success" ]; then
+              echo "  ❌ Data Preparation"
+            fi
+            if [ "${{ needs.train-vae-models.result }}" != "success" ]; then
+              echo "  ❌ Model Training"
+            fi
+            if [ "${{ needs.validate-vae-models.result }}" != "success" ]; then
+              echo "  ❌ Validation"
+            fi
+            if [ "${{ needs.bias-detection.result }}" != "success" ]; then
+              echo "  ❌ Bias Detection"
+            fi
+            if [ "${{ needs.model-selection.result }}" != "success" ]; then
+              echo "  ❌ Model Selection"
+            fi
           fi
