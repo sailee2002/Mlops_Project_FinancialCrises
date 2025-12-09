@@ -913,7 +913,7 @@ jobs:
           if [ -f "outputs/models/plots/model_comparison.png" ]; then
             echo "✅ Model comparison plot created"
           fi
-        continue-on-error: true
+        continue-on-error: false
       
       # Upload all training outputs to GCS
       - name: Upload models and outputs to GCS
@@ -957,7 +957,7 @@ jobs:
           echo "  EDA:        gs://${{ env.GCP_BUCKET }}/outputs/eda/"
           echo "  Snorkel:    gs://${{ env.GCP_BUCKET }}/outputs/snorkel/"
           echo "  MLflow:     gs://${{ env.GCP_BUCKET }}/mlruns/model3/"
-        continue-on-error: true
+        continue-on-error: false
       
       - name: Upload training artifacts to GitHub
         if: steps.check_data.outputs.data_exists == 'true'
@@ -970,7 +970,7 @@ jobs:
             outputs/models/plots/*.png
             outputs/models/results/*.csv
           retention-days: 30
-        continue-on-error: true
+        continue-on-error: false
 
   # Validate models and check deployment readiness
   validate-models:
@@ -998,7 +998,7 @@ jobs:
         with:
           name: anomaly-detection-models
           path: artifacts
-        continue-on-error: true
+        continue-on-error: false
       
       - name: Validate model performance
         run: |
@@ -1027,7 +1027,7 @@ jobs:
           else
             echo "⚠️  Training report not found in artifacts"
           fi
-        continue-on-error: true
+        continue-on-error: false
       
       - name: Check deployment readiness in GCS
         run: |
@@ -1072,7 +1072,7 @@ jobs:
             gsutil ls gs://${{ env.GCP_BUCKET }}/outputs/model3/**/*.csv 2>/dev/null | wc -l | xargs echo "  Results:"
             gsutil ls gs://${{ env.GCP_BUCKET }}/outputs/model3/**/*.txt 2>/dev/null | wc -l | xargs echo "  Reports:"
           fi
-        continue-on-error: true
+        continue-on-error: false
 
   # Pipeline summary
   pipeline-summary:
