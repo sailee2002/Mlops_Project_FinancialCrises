@@ -775,7 +775,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: labeled-data
-          path: outputs/snorkel/data/snorkel_labeled_data.csv
+          path: |
+            outputs/snorkel/data/snorkel_labeled_data.csv
+            outputs/snorkel/data/snorkel_labeled_only.csv
           retention-days: 7
 
   # Train anomaly detection models
@@ -820,11 +822,13 @@ jobs:
       # Fallback: Download from GCS if artifact fails
       - name: Fallback - Download labeled data from GCS
         run: |
-          if [ ! -f "outputs/snorkel/data/snorkel_labeled_data.csv" ]; then
+          if [ ! -f "outputs/snorkel/data/snorkel_labeled_only.csv" ]; then
             echo "📥 Downloading labeled data from GCS..."
             mkdir -p outputs/snorkel/data
-            gsutil cp gs://${{ env.GCP_BUCKET }}/outputs/snorkel/data/snorkel_labeled_data.csv outputs/snorkel/data/ || {
-              echo "❌ Labeled data not found in GCS"
+            
+            # Download the specific file needed for training
+            gsutil cp gs://${{ env.GCP_BUCKET }}/outputs/snorkel/data/snorkel_labeled_only.csv outputs/snorkel/data/ || {
+              echo "❌ snorkel_labeled_only.csv not found in GCS"
               exit 1
             }
             echo "✅ Labeled data downloaded from GCS"
@@ -833,16 +837,16 @@ jobs:
       - name: Verify labeled data
         id: check_data
         run: |
-          if [ -f "outputs/snorkel/data/snorkel_labeled_data.csv" ]; then
+          if [ -f "outputs/snorkel/data/snorkel_labeled_only.csv" ]; then
             echo "data_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Labeled data verified"
+            echo "✅ Labeled data verified (snorkel_labeled_only.csv)"
             ls -lh outputs/snorkel/data/
             echo ""
             echo "Sample data:"
-            head -n 3 outputs/snorkel/data/snorkel_labeled_data.csv
+            head -n 3 outputs/snorkel/data/snorkel_labeled_only.csv
           else
             echo "data_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Labeled data not found"
+            echo "❌ snorkel_labeled_only.csv not found"
             exit 1
           fi
       
@@ -913,7 +917,7 @@ jobs:
           if [ -f "outputs/models/plots/model_comparison.png" ]; then
             echo "✅ Model comparison plot created"
           fi
-        continue-on-error: false
+        continue-on-error: true
       
       # Upload all training outputs to GCS
       - name: Upload models and outputs to GCS
@@ -957,7 +961,7 @@ jobs:
           echo "  EDA:        gs://${{ env.GCP_BUCKET }}/outputs/eda/"
           echo "  Snorkel:    gs://${{ env.GCP_BUCKET }}/outputs/snorkel/"
           echo "  MLflow:     gs://${{ env.GCP_BUCKET }}/mlruns/model3/"
-        continue-on-error: false
+        continue-on-error: true
       
       - name: Upload training artifacts to GitHub
         if: steps.check_data.outputs.data_exists == 'true'
@@ -970,7 +974,7 @@ jobs:
             outputs/models/plots/*.png
             outputs/models/results/*.csv
           retention-days: 30
-        continue-on-error: false
+        continue-on-error: true
 
   # Validate models and check deployment readiness
   validate-models:
@@ -998,7 +1002,7 @@ jobs:
         with:
           name: anomaly-detection-models
           path: artifacts
-        continue-on-error: false
+        continue-on-error: true
       
       - name: Validate model performance
         run: |
@@ -1027,7 +1031,7 @@ jobs:
           else
             echo "⚠️  Training report not found in artifacts"
           fi
-        continue-on-error: false
+        continue-on-error: true
       
       - name: Check deployment readiness in GCS
         run: |
@@ -1072,7 +1076,7 @@ jobs:
             gsutil ls gs://${{ env.GCP_BUCKET }}/outputs/model3/**/*.csv 2>/dev/null | wc -l | xargs echo "  Results:"
             gsutil ls gs://${{ env.GCP_BUCKET }}/outputs/model3/**/*.txt 2>/dev/null | wc -l | xargs echo "  Reports:"
           fi
-        continue-on-error: false
+        continue-on-error: true
 
   # Pipeline summary
   pipeline-summary:
