@@ -25,7 +25,7 @@ def load_validation_data(model_name='Dense_VAE_Optimized'):
     # Determine model directory
     if model_name == 'Dense_VAE_Optimized':
         model_dir = Path('outputs/output_Dense_VAE_optimized')
-        scenarios_file = 'dense_vae_optimized_scenarios.csv'
+        scenarios_file = 'dense_vae_scenarios.csv'
     else:
         model_dir = Path('outputs/output_Ensemble_VAE')
         scenarios_file = 'ensemble_vae_scenarios.csv'
