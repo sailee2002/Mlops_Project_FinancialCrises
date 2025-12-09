@@ -41,10 +41,19 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-minimal-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-minimal-
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas numpy matplotlib seaborn scipy python-dotenv
+          pip install pandas numpy matplotlib seaborn scipy scikit-learn python-dotenv
       
       - name: Download VAE training data from GCS
         run: |
@@ -102,7 +111,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas numpy matplotlib seaborn scipy python-dotenv
       
       - name: Download training data
         uses: actions/download-artifact@v4
@@ -222,11 +231,23 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-minimal-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-minimal-
+            ${{ runner.os }}-pip-
       
       - name: Install dependencies
         run: |
@@ -276,10 +297,10 @@ jobs:
       
       - name: Upload validation results to GCS
         run: |
+          echo "📤 Uploading validation results to GCS..."
           gcloud config set project ${{ env.GCP_PROJECT }}
           
           if [ -d "outputs/validation" ]; then
-            echo "📤 Uploading validation results to GCS..."
             gsutil -m cp -r outputs/validation/* gs://${{ env.GCP_BUCKET }}/outputs/vae/validation/
             echo "✅ Validation results uploaded"
           fi
@@ -358,10 +379,10 @@ jobs:
       
       - name: Upload bias results to GCS
         run: |
+          echo "📤 Uploading bias detection results to GCS..."
           gcloud config set project ${{ env.GCP_PROJECT }}
           
           if [ -d "outputs/bias_detection" ]; then
-            echo "📤 Uploading bias detection results to GCS..."
             gsutil -m cp -r outputs/bias_detection/* gs://${{ env.GCP_BUCKET }}/outputs/vae/bias_detection/
             echo "✅ Bias results uploaded"
           fi
