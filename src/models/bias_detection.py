@@ -13,13 +13,13 @@ from scipy.stats import ks_2samp
 import json
 
 # ============================================
-# 1. DEFINE DATA SLICES
+# 1. DEFINE DATA SLICES (WITH 4 NEW DIMENSIONS)
 # ============================================
 
 def create_data_slices(data):
     """
     Create meaningful slices of financial data
-    Based on economic conditions, not demographics
+    Based on economic conditions (7 total dimensions)
     """
     
     print("="*60)
@@ -56,13 +56,44 @@ def create_data_slices(data):
                                               (data['Unemployment_Rate'] < unemp_75)]
         slices['Unemployment_High'] = data[data['Unemployment_Rate'] >= unemp_75]
     
-    # Slice 4: Time Periods (if Date available)
-    # This helps detect temporal bias
+    # ============================================
+    # NEW DIMENSION 4: Yield Curve (Recession Signal)
+    # ============================================
+    if 'Yield_Curve_Spread' in data.columns:
+        slices['Yield_Curve_Inverted'] = data[data['Yield_Curve_Spread'] < 0]
+        slices['Yield_Curve_Normal'] = data[data['Yield_Curve_Spread'] >= 0]
+    
+    # ============================================
+    # NEW DIMENSION 5: Financial Stress Index
+    # ============================================
+    if 'Financial_Stress_Index' in data.columns:
+        fsi_75 = data['Financial_Stress_Index'].quantile(0.75)
+        
+        slices['Financial_Stress_Low'] = data[data['Financial_Stress_Index'] < fsi_75]
+        slices['Financial_Stress_High'] = data[data['Financial_Stress_Index'] >= fsi_75]
+    
+    # ============================================
+    # NEW DIMENSION 6: Interest Rate Regime
+    # ============================================
+    if 'Federal_Funds_Rate' in data.columns:
+        slices['Fed_Rate_ZeroLowerBound'] = data[data['Federal_Funds_Rate'] < 0.5]
+        slices['Fed_Rate_Normal'] = data[(data['Federal_Funds_Rate'] >= 0.5) & 
+                                          (data['Federal_Funds_Rate'] < 3.0)]
+        slices['Fed_Rate_High'] = data[data['Federal_Funds_Rate'] >= 3.0]
+    
+    # ============================================
+    # NEW DIMENSION 7: Credit Stress
+    # ============================================
+    if 'High_Yield_Spread' in data.columns:
+        hy_75 = data['High_Yield_Spread'].quantile(0.75)
+        
+        slices['Credit_Stress_Low'] = data[data['High_Yield_Spread'] < hy_75]
+        slices['Credit_Stress_High'] = data[data['High_Yield_Spread'] >= hy_75]
     
     print("Created Data Slices:")
     print("-" * 60)
     for slice_name, slice_data in slices.items():
-        print(f"  {slice_name:25s}: {len(slice_data):6,} samples")
+        print(f"  {slice_name:30s}: {len(slice_data):6,} samples")
     
     print("\n" + "="*60 + "\n")
     
@@ -93,59 +124,14 @@ def evaluate_slice_performance(original_slices, generated_data, feature_list):
         common_features = list(set(original_slice.columns) & set(generated_numeric.columns) & set(feature_list))
         
         if len(common_features) == 0:
-            print(f"  âš  No common features found")
+            print(f"  ⚠ No common features found")
             continue
         
-        # For generated data, we need to identify which scenarios match this slice
-        # We'll use the slice's feature characteristics
-        slice_criteria = {}
-        
-        if 'GDP' in slice_name:
-            if 'GDP' in generated_numeric.columns:
-                if 'Low' in slice_name:
-                    gdp_threshold = original_slice['GDP'].max()
-                    matching_gen = generated_numeric[generated_numeric['GDP'] < gdp_threshold]
-                elif 'High' in slice_name:
-                    gdp_threshold = original_slice['GDP'].min()
-                    matching_gen = generated_numeric[generated_numeric['GDP'] >= gdp_threshold]
-                else:  # Medium
-                    gdp_low = original_slice['GDP'].min()
-                    gdp_high = original_slice['GDP'].max()
-                    matching_gen = generated_numeric[(generated_numeric['GDP'] >= gdp_low) & 
-                                                     (generated_numeric['GDP'] < gdp_high)]
-        
-        elif 'VIX' in slice_name:
-            if 'VIX' in generated_numeric.columns:
-                if 'Low' in slice_name:
-                    vix_threshold = original_slice['VIX'].max()
-                    matching_gen = generated_numeric[generated_numeric['VIX'] < vix_threshold]
-                elif 'High' in slice_name:
-                    vix_threshold = original_slice['VIX'].min()
-                    matching_gen = generated_numeric[generated_numeric['VIX'] >= vix_threshold]
-                else:  # Medium
-                    vix_low = original_slice['VIX'].min()
-                    vix_high = original_slice['VIX'].max()
-                    matching_gen = generated_numeric[(generated_numeric['VIX'] >= vix_low) & 
-                                                     (generated_numeric['VIX'] < vix_high)]
-        
-        elif 'Unemployment' in slice_name:
-            if 'Unemployment_Rate' in generated_numeric.columns:
-                if 'Low' in slice_name:
-                    unemp_threshold = original_slice['Unemployment_Rate'].max()
-                    matching_gen = generated_numeric[generated_numeric['Unemployment_Rate'] < unemp_threshold]
-                elif 'High' in slice_name:
-                    unemp_threshold = original_slice['Unemployment_Rate'].min()
-                    matching_gen = generated_numeric[generated_numeric['Unemployment_Rate'] >= unemp_threshold]
-                else:  # Medium
-                    unemp_low = original_slice['Unemployment_Rate'].min()
-                    unemp_high = original_slice['Unemployment_Rate'].max()
-                    matching_gen = generated_numeric[(generated_numeric['Unemployment_Rate'] >= unemp_low) & 
-                                                     (generated_numeric['Unemployment_Rate'] < unemp_high)]
-        else:
-            matching_gen = generated_numeric
+        # Match generated scenarios to this slice
+        matching_gen = match_generated_to_slice(slice_name, original_slice, generated_numeric)
         
         if len(matching_gen) == 0:
-            print(f"  âš  No matching generated scenarios found")
+            print(f"  ⚠ No matching generated scenarios found")
             continue
         
         # Compute KS test for this slice
@@ -177,6 +163,74 @@ def evaluate_slice_performance(original_slices, generated_data, feature_list):
     return slice_results
 
 
+def match_generated_to_slice(slice_name, original_slice, generated_numeric):
+    """Match generated scenarios to slice"""
+    
+    # GDP-based slicing
+    if 'GDP' in slice_name and 'GDP' in generated_numeric.columns and 'GDP' in original_slice.columns:
+        if 'Low' in slice_name:
+            return generated_numeric[generated_numeric['GDP'] < original_slice['GDP'].max()]
+        elif 'High' in slice_name:
+            return generated_numeric[generated_numeric['GDP'] >= original_slice['GDP'].min()]
+        elif 'Medium' in slice_name:
+            return generated_numeric[(generated_numeric['GDP'] >= original_slice['GDP'].min()) & 
+                                   (generated_numeric['GDP'] < original_slice['GDP'].max())]
+    
+    # VIX-based slicing
+    elif 'VIX' in slice_name and 'VIX' in generated_numeric.columns and 'VIX' in original_slice.columns:
+        if 'Low' in slice_name:
+            return generated_numeric[generated_numeric['VIX'] < original_slice['VIX'].max()]
+        elif 'High' in slice_name:
+            return generated_numeric[generated_numeric['VIX'] >= original_slice['VIX'].min()]
+        elif 'Medium' in slice_name:
+            return generated_numeric[(generated_numeric['VIX'] >= original_slice['VIX'].min()) & 
+                                   (generated_numeric['VIX'] < original_slice['VIX'].max())]
+    
+    # Unemployment-based slicing
+    elif 'Unemployment' in slice_name and 'Unemployment_Rate' in generated_numeric.columns:
+        if 'Low' in slice_name:
+            return generated_numeric[generated_numeric['Unemployment_Rate'] < original_slice['Unemployment_Rate'].max()]
+        elif 'High' in slice_name:
+            return generated_numeric[generated_numeric['Unemployment_Rate'] >= original_slice['Unemployment_Rate'].min()]
+        elif 'Medium' in slice_name:
+            return generated_numeric[(generated_numeric['Unemployment_Rate'] >= original_slice['Unemployment_Rate'].min()) & 
+                                   (generated_numeric['Unemployment_Rate'] < original_slice['Unemployment_Rate'].max())]
+    
+    # NEW: Yield Curve slicing
+    elif 'Yield_Curve' in slice_name and 'Yield_Curve_Spread' in generated_numeric.columns:
+        if 'Inverted' in slice_name:
+            return generated_numeric[generated_numeric['Yield_Curve_Spread'] < 0]
+        elif 'Normal' in slice_name:
+            return generated_numeric[generated_numeric['Yield_Curve_Spread'] >= 0]
+    
+    # NEW: Financial Stress slicing
+    elif 'Financial_Stress' in slice_name and 'Financial_Stress_Index' in generated_numeric.columns:
+        if 'Low' in slice_name:
+            return generated_numeric[generated_numeric['Financial_Stress_Index'] < original_slice['Financial_Stress_Index'].max()]
+        else:
+            return generated_numeric[generated_numeric['Financial_Stress_Index'] >= original_slice['Financial_Stress_Index'].min()]
+    
+    # NEW: Fed Rate regime slicing
+    elif 'Fed_Rate' in slice_name and 'Federal_Funds_Rate' in generated_numeric.columns:
+        if 'ZeroLowerBound' in slice_name:
+            return generated_numeric[generated_numeric['Federal_Funds_Rate'] < 0.5]
+        elif 'High' in slice_name:
+            return generated_numeric[generated_numeric['Federal_Funds_Rate'] >= 3.0]
+        elif 'Normal' in slice_name:
+            return generated_numeric[(generated_numeric['Federal_Funds_Rate'] >= 0.5) & 
+                                   (generated_numeric['Federal_Funds_Rate'] < 3.0)]
+    
+    # NEW: Credit Stress slicing
+    elif 'Credit_Stress' in slice_name and 'High_Yield_Spread' in generated_numeric.columns:
+        if 'Low' in slice_name:
+            return generated_numeric[generated_numeric['High_Yield_Spread'] < original_slice['High_Yield_Spread'].max()]
+        else:
+            return generated_numeric[generated_numeric['High_Yield_Spread'] >= original_slice['High_Yield_Spread'].min()]
+    
+    # Default: return all generated data
+    return generated_numeric
+
+
 # ============================================
 # 3. DETECT BIAS
 # ============================================
@@ -191,7 +245,7 @@ def detect_bias(slice_results):
     ks_pass_rates = [r['ks_pass_rate'] for r in slice_results.values()]
     
     if len(ks_pass_rates) == 0:
-        print("âš  No slice results to analyze")
+        print("⚠ No slice results to analyze")
         return None
     
     mean_rate = np.mean(ks_pass_rates)
@@ -215,15 +269,15 @@ def detect_bias(slice_results):
     if range_rate > 20:
         bias_detected = True
         bias_severity = "High"
-        print("âš  HIGH BIAS DETECTED")
+        print("⚠ HIGH BIAS DETECTED")
         print("  Performance varies >20% across slices")
     elif range_rate > 10:
         bias_detected = True
         bias_severity = "Moderate"
-        print("âš  MODERATE BIAS DETECTED")
+        print("⚠ MODERATE BIAS DETECTED")
         print("  Performance varies 10-20% across slices")
     else:
-        print("âœ“ NO SIGNIFICANT BIAS DETECTED")
+        print("✓ NO SIGNIFICANT BIAS DETECTED")
         print("  Performance is consistent across slices")
     
     print("\n" + "="*60 + "\n")
@@ -254,7 +308,7 @@ def create_bias_plots(slice_results, output_dir='outputs/bias_detection'):
     ks_rates = [slice_results[s]['ks_pass_rate'] for s in slice_names]
     
     # Plot: Performance across slices
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     
     colors = ['green' if rate > 75 else 'orange' if rate > 60 else 'red' for rate in ks_rates]
     ax.barh(slice_names, ks_rates, color=colors, alpha=0.7)
@@ -270,7 +324,7 @@ def create_bias_plots(slice_results, output_dir='outputs/bias_detection'):
     plt.savefig(f'{output_dir}/bias_detection_slices.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"âœ“ Saved: {output_dir}/bias_detection_slices.png\n")
+    print(f"✓ Saved: {output_dir}/bias_detection_slices.png\n")
 
 
 # ============================================
@@ -301,7 +355,11 @@ def save_bias_report(model_name, slice_results, bias_analysis, output_dir='outpu
         f.write("Data sliced by economic conditions:\n")
         f.write("1. GDP Levels (Low/Medium/High)\n")
         f.write("2. VIX Levels (Low/Medium/High) - Market Stress\n")
-        f.write("3. Unemployment Levels (Low/Medium/High)\n\n")
+        f.write("3. Unemployment Levels (Low/Medium/High)\n")
+        f.write("4. Yield Curve (Inverted/Normal) - Recession Signal\n")
+        f.write("5. Financial Stress Index (Low/High)\n")
+        f.write("6. Federal Funds Rate (ZLB/Normal/High)\n")
+        f.write("7. Credit Stress (Low/High) - High Yield Spreads\n\n")
         
         f.write("="*60 + "\n")
         f.write("SLICE PERFORMANCE\n")
@@ -338,7 +396,7 @@ def save_bias_report(model_name, slice_results, bias_analysis, output_dir='outpu
                     f.write("1. Monitor slice performance in production\n")
                     f.write("2. Consider minor adjustments to training data\n")
             else:
-                f.write("âœ“ Model performs consistently across all data slices.\n")
+                f.write("✓ Model performs consistently across all data slices.\n")
                 f.write("  No bias mitigation required.\n")
         
         f.write("\n" + "="*60 + "\n")
@@ -354,7 +412,7 @@ def save_bias_report(model_name, slice_results, bias_analysis, output_dir='outpu
             f.write("Implement recommended mitigation strategies before\n")
             f.write("production deployment.\n")
     
-    print(f"âœ“ Saved bias report: {report_path}")
+    print(f"✓ Saved bias report: {report_path}")
     
     # Save as JSON
     json_path = f'{output_dir}/bias_analysis.json'
@@ -366,7 +424,7 @@ def save_bias_report(model_name, slice_results, bias_analysis, output_dir='outpu
             'timestamp': pd.Timestamp.now().isoformat()
         }, f, indent=2)
     
-    print(f"âœ“ Saved bias analysis JSON: {json_path}\n")
+    print(f"✓ Saved bias analysis JSON: {json_path}\n")
 
 
 # ============================================
@@ -376,13 +434,13 @@ def save_bias_report(model_name, slice_results, bias_analysis, output_dir='outpu
 def main(model_name='Dense_VAE_Optimized'):
     """Main bias detection pipeline"""
     
-    # Determine model directory
+    # Determine model directory - CORRECT FILENAMES
     if model_name == 'Dense_VAE_Optimized':
         model_dir = Path('outputs/output_Dense_VAE_optimized')
-        scenarios_file = 'dense_vae_optimized_scenarios.csv'
+        scenarios_file = 'dense_vae_scenarios.csv'  # ✅ CORRECT
     else:
         model_dir = Path('outputs/output_Ensemble_VAE')
-        scenarios_file = 'ensemble_vae_scenarios.csv'
+        scenarios_file = 'ensemble_vae_scenarios.csv'  # ✅ CORRECT
     
     # Load data
     print(f"Loading data for: {model_name}\n")
@@ -400,7 +458,7 @@ def main(model_name='Dense_VAE_Optimized'):
     for data_path in possible_paths:
         try:
             original_data = pd.read_csv(data_path)
-            print(f"âœ“ Found data at: {data_path}\n")
+            print(f"✓ Found data at: {data_path}\n")
             break
         except FileNotFoundError:
             continue
@@ -418,7 +476,7 @@ def main(model_name='Dense_VAE_Optimized'):
     # CRITICAL: Use hold-out test set only
     # ============================================
     
-    print("âš ï¸  IMPORTANT: Using hold-out test set for bias detection!")
+    print("⚠️  IMPORTANT: Using hold-out test set for bias detection!")
     print("Replicating training split...\n")
     
     from sklearn.model_selection import train_test_split
@@ -431,7 +489,7 @@ def main(model_name='Dense_VAE_Optimized'):
     )
     
     print(f"Full data: {len(original_data):,} rows")
-    print(f"Test set: {len(test_data):,} rows (hold-out) âœ…\n")
+    print(f"Test set: {len(test_data):,} rows (hold-out) ✓\n")
     
     # Create slices from TEST DATA ONLY
     original_slices = create_data_slices(test_data)
@@ -450,7 +508,7 @@ def main(model_name='Dense_VAE_Optimized'):
     save_bias_report(model_name, slice_results, bias_analysis)
     
     print("="*60)
-    print("âœ… BIAS DETECTION COMPLETE")
+    print("✓ BIAS DETECTION COMPLETE")
     print("="*60)
     print(f"\nAnalyzed Model: {model_name}")
     print(f"Results saved in: outputs/bias_detection/")
